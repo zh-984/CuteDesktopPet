@@ -6,15 +6,6 @@ SRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
 OUT_DIR = os.path.join(SRC_DIR, 'processed')
 SIZE = (256, 256)
 
-frames = {
-    'idle': ['pet_idle.jpg'],
-    'run': ['pet_run_1.jpg', 'pet_run_2.jpg'],
-    'jump': ['pet_jump.jpg'],
-    'dance': ['pet_dance_1.jpg', 'pet_dance_2.jpg'],
-}
-
-os.makedirs(OUT_DIR, exist_ok=True)
-
 
 def rgb_to_hsv(r, g, b):
     r, g, b = r / 255.0, g / 255.0, b / 255.0
@@ -150,19 +141,49 @@ def remove_background(img, s_threshold=0.08, v_threshold=0.88):
     return img
 
 
-for state, files in frames.items():
-    for i, fn in enumerate(files):
-        src = os.path.join(SRC_DIR, fn)
-        if not os.path.exists(src):
-            print(f'[WARN] missing {src}')
-            continue
-        img = Image.open(src).convert('RGBA')
-        img = remove_background(img)
-        img = remove_white_fringe(img)
-        img = remove_stray_white_pixels(img, v_threshold=0.94, s_threshold=0.06)
-        img = img.resize(SIZE, Image.Resampling.LANCZOS)
-        img = erode_alpha(img, radius=1)
-        out_name = f'{state}_{i}.png'
-        out_path = os.path.join(OUT_DIR, out_name)
-        img.save(out_path)
-        print(f'[OK] {out_path}')
+frames = {
+    'idle': ['pet_idle.jpg'],
+    'run': ['pet_run_1.jpg', 'pet_run_2.jpg'],
+    'jump': ['pet_jump.jpg'],
+    'dance': ['pet_dance_1.jpg', 'pet_dance_2.jpg'],
+}
+
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+
+def process_image(src_path):
+    img = Image.open(src_path).convert('RGBA')
+    img = remove_background(img)
+    img = remove_white_fringe(img)
+    img = remove_stray_white_pixels(img, v_threshold=0.94, s_threshold=0.06)
+    bbox = img.getbbox()
+    if bbox:
+        img = img.crop(bbox)
+        w, h = img.size
+        max_dim = max(w, h)
+        square = Image.new('RGBA', (max_dim, max_dim), (0, 0, 0, 0))
+        square.paste(img, ((max_dim - w) // 2, (max_dim - h) // 2))
+        img = square
+    img = img.resize(SIZE, Image.Resampling.LANCZOS)
+    img = erode_alpha(img, radius=1)
+    return img
+
+
+def main():
+    for state, files in frames.items():
+        for i, fn in enumerate(files):
+            src = os.path.join(SRC_DIR, fn)
+            if not os.path.exists(src):
+                print(f'[WARN] missing {src}')
+                continue
+            img = process_image(src)
+            out_name = f'{state}_{i}.png'
+            out_path = os.path.join(OUT_DIR, out_name)
+            img.save(out_path)
+            print(f'[OK] {out_path}')
+
+
+if __name__ == '__main__':
+    main()
+

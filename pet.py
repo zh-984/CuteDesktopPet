@@ -3,12 +3,15 @@ import os
 import random
 import logging
 import time
+import json
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon
 from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect
 from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
+SAVE_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pet_data.json')
 log_path = os.path.join(os.environ.get('TEMP', os.getcwd()), 'CuteDesktopPet.log')
+
 logging.basicConfig(filename=log_path, level=logging.INFO, encoding='utf-8',
                     format='%(asctime)s %(levelname)s %(message)s')
 
@@ -93,8 +96,8 @@ class SpeechBubble(QWidget):
 class StatusPanel(QWidget):
     """Status panel that shows food counts, satiety, work duration, and allows feeding."""
 
-    PANEL_W = 150
-    PANEL_H = 152
+    PANEL_W = 180
+    PANEL_H = 155
 
     def __init__(self, pet):
         super().__init__()
@@ -116,6 +119,7 @@ class StatusPanel(QWidget):
 
         # Clickable row rectangles for feeding
         self._row_rects = {}
+        self._close_btn_rect = QRect(self.PANEL_W - 24, 6, 18, 18)
         self.hide()
 
     def update_data(self, candy, burger, cake, satiety, working, work_elapsed):
@@ -130,6 +134,9 @@ class StatusPanel(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.pos()
+            if self._close_btn_rect.contains(pos):
+                self.pet.toggle_panel()
+                return
             for food, rect in self._row_rects.items():
                 if rect.contains(pos):
                     self.pet.feed_food(food)
@@ -154,7 +161,7 @@ class StatusPanel(QWidget):
         p.drawPath(path)
 
         font_title = QFont('Microsoft YaHei', 10, QFont.Weight.Bold)
-        font_item = QFont('Microsoft YaHei', 9)
+        font_item = QFont('Microsoft YaHei', 8)
         font_small = QFont('Microsoft YaHei', 8)
         font_emoji = QFont('Segoe UI Emoji', 11)
         font_feed = QFont('Microsoft YaHei', 7, QFont.Weight.Bold)
@@ -162,12 +169,18 @@ class StatusPanel(QWidget):
         # Title
         p.setPen(QColor(74, 58, 106))
         p.setFont(font_title)
-        p.drawText(QRect(0, 6, self.PANEL_W, 17), Qt.AlignmentFlag.AlignCenter, '📋 状态栏')
+        p.drawText(QRect(0, 6, self.PANEL_W, 18), Qt.AlignmentFlag.AlignCenter, '📋 状态栏')
+
+        # Close button '✕'
+        p.setPen(QColor(160, 140, 190))
+        font_close = QFont('Microsoft YaHei', 9, QFont.Weight.Bold)
+        p.setFont(font_close)
+        p.drawText(self._close_btn_rect, Qt.AlignmentFlag.AlignCenter, '✕')
 
         y = 28
         row_h = 21
         pad = 14
-        btn_w = 28
+        btn_w = 26
         btn_h = 16
 
         foods = [
@@ -181,7 +194,7 @@ class StatusPanel(QWidget):
             p.drawText(pad, y + 14, emoji)
             p.setFont(font_item)
             p.setPen(QColor(74, 58, 106))
-            p.drawText(pad + 20, y + 14, f'{name}×{count}')
+            p.drawText(pad + 18, y + 14, f'{name}×{count} (+{gain})')
             bx = self.PANEL_W - pad - btn_w
             by = y + 2
             btn_rect = QRect(bx, by, btn_w, btn_h)
@@ -203,7 +216,7 @@ class StatusPanel(QWidget):
 
         p.setPen(QColor(74, 58, 106))
         p.setFont(font_small)
-        p.drawText(pad, y + 9, f'饱食度: {int(self.satiety)}/{SATIETY_MAX}')
+        p.drawText(pad, y + 9, f'饱食度: {self.satiety:.1f}/{SATIETY_MAX}')
         y += 15
 
         bar_x = pad
@@ -243,6 +256,7 @@ class StatusPanel(QWidget):
         p.drawText(pad, y + 10, work_text)
 
         p.end()
+
 
 
 class DesktopPet(QWidget):
@@ -291,31 +305,19 @@ class DesktopPet(QWidget):
         self.ground_y = start_y
 
         self.pos_f = [float(start_x), float(start_y)]
-        self.vx = 0.0
-        self.vy = 0.0
-        self.run_speed = 4.0
-        self.jump_strength = -14.0
-        self.gravity = 0.8
-        self.target_x = None
-        self.dance_timer = 0
-        self.playful_eat_timer = 0
-        self.eat_timer = 0
-        self.playful_sleep_timer = 0
-        self.playful_wave_timer = 0
-        self.playful_bounce_timer = 0
-        self.playful_bounce_base_y = 0
-
-        # Hunger / work system
+             # Hunger / work system
         self.satiety = SATIETY_MAX
+        self.candy_count = 0
+        self.burger_count = 0
+        self.cake_count = 0
+        self.load_data()
+
         self.working = False
         self.work_start_time = 0
         self.last_satiety_check = time.time()
         self.last_candy = 0
         self.last_burger = 0
         self.last_cake = 0
-        self.candy_count = 0
-        self.burger_count = 0
-        self.cake_count = 0
         self.last_work_duration_speech = 0
 
         self.anim_timer = QTimer(self)
@@ -332,7 +334,7 @@ class DesktopPet(QWidget):
 
         self.satiety_timer = QTimer(self)
         self.satiety_timer.timeout.connect(self.check_satiety)
-        self.satiety_timer.start(60000)
+        self.satiety_timer.start(10000)
 
         self.panel_refresh_timer = QTimer(self)
         self.panel_refresh_timer.timeout.connect(self.refresh_panel)
@@ -345,6 +347,34 @@ class DesktopPet(QWidget):
         QTimer.singleShot(500, lambda: self.show_speech(STARTUP_SPEECHES[0], 2500))
         QTimer.singleShot(3200, lambda: self.show_speech(STARTUP_SPEECHES[1], 2500))
         QTimer.singleShot(6000, lambda: self.show_speech(STARTUP_SPEECHES[2], 2500))
+
+    def save_data(self):
+        data = {
+            'satiety': round(self.satiety, 2),
+            'candy_count': self.candy_count,
+            'burger_count': self.burger_count,
+            'cake_count': self.cake_count,
+            'last_save_time': time.time(),
+        }
+        try:
+            with open(SAVE_DATA_PATH, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.error(f'Failed to save pet data: {e}')
+
+    def load_data(self):
+        if not os.path.exists(SAVE_DATA_PATH):
+            return
+        try:
+            with open(SAVE_DATA_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.satiety = float(data.get('satiety', SATIETY_MAX))
+                self.candy_count = int(data.get('candy_count', 0))
+                self.burger_count = int(data.get('burger_count', 0))
+                self.cake_count = int(data.get('cake_count', 0))
+                logging.info(f'Loaded pet data: {data}')
+        except Exception as e:
+            logging.error(f'Failed to load pet data: {e}')
 
     def force_show(self):
         logging.info('force_show called')
@@ -377,7 +407,9 @@ class DesktopPet(QWidget):
             'jump': [resource_path('assets/processed/jump_0.png')],
             'dance': [resource_path('assets/processed/dance_0.png'),
                       resource_path('assets/processed/dance_1.png')],
+            'sleep': [resource_path('assets/sleep.png')],
         }
+
         self.pixmaps = {}
         for state, paths in self.raw_frames.items():
             self.pixmaps[state] = []
@@ -390,24 +422,15 @@ class DesktopPet(QWidget):
                     self.pixmaps[state].append(pm)
                 else:
                     logging.warning(f'missing asset: {p}')
-        sleep_path = resource_path('assets/sleep.png')
-        if os.path.exists(sleep_path):
-            self.sleep_pixmap = QPixmap(sleep_path).scaled(
-                QSize(80, 80), Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-        else:
-            logging.warning(f'missing asset: {sleep_path}')
-
-
 
     def current_pixmap(self):
         # During drag, cycle run frames like normal running.
         # Playful/hungry/eat states reuse idle animation with overlays.
         if self.state == 'drag':
             img_state = 'run'
-        elif self.state in ('playful_look', 'playful_eat', 'eat', 'hungry',
-                            'playful_sleep', 'playful_wave'):
+        elif self.state == 'playful_sleep':
+            img_state = 'sleep' if 'sleep' in self.pixmaps and self.pixmaps['sleep'] else 'idle'
+        elif self.state in ('playful_look', 'playful_eat', 'eat', 'hungry', 'playful_wave'):
             img_state = 'idle'
         elif self.state == 'playful_bounce':
             img_state = 'jump'
@@ -450,21 +473,21 @@ class DesktopPet(QWidget):
             painter.setBrush(QColor(255, 220, 150))
             painter.drawEllipse(cx - 6, cy - 6, 12, 12)
         elif self.state == 'playful_sleep':
-            # Dark tint + sleep icon.
-            painter.setBrush(QColor(40, 40, 80, 80))
+            # Soft dark blue night tint
+            painter.setBrush(QColor(30, 30, 70, 70))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(result.rect())
-            if self.sleep_pixmap is not None:
-                sw = self.sleep_pixmap.width()
-                sh = self.sleep_pixmap.height()
-                painter.drawPixmap(result.width() // 2 - sw // 2, 5, sw, sh, self.sleep_pixmap)
-            else:
-                painter.setPen(QColor(180, 200, 255))
-                font = QFont('Microsoft YaHei', 18, QFont.Weight.Bold)
-                painter.setFont(font)
-                painter.drawText(result.width() // 2 - 10, result.height() // 3, 'Z')
-                painter.drawText(result.width() // 2 + 5, result.height() // 3 - 15, 'Z')
-                painter.drawText(result.width() // 2 + 20, result.height() // 3 - 30, 'Z')
+            # Floating 'Zzz' text
+            painter.setPen(QColor(180, 200, 255))
+            font = QFont('Microsoft YaHei', 18, QFont.Weight.Bold)
+            painter.setFont(font)
+            painter.drawText(result.width() // 2 - 10, result.height() // 4, 'Z')
+            font_s = QFont('Microsoft YaHei', 14, QFont.Weight.Bold)
+            painter.setFont(font_s)
+            painter.drawText(result.width() // 2 + 10, result.height() // 4 - 15, 'z')
+            font_xs = QFont('Microsoft YaHei', 10, QFont.Weight.Bold)
+            painter.setFont(font_xs)
+            painter.drawText(result.width() // 2 + 24, result.height() // 4 - 28, 'z')
         elif self.state == 'playful_wave':
             # Waving hand overlay.
             painter.setPen(QColor(255, 160, 180))
@@ -476,6 +499,7 @@ class DesktopPet(QWidget):
 
         painter.end()
         return result
+
 
     def update_image(self):
         self.label.setPixmap(self.current_pixmap())
@@ -777,6 +801,7 @@ class DesktopPet(QWidget):
             self.start_idle()
         self.start_eat()
         self.show_speech(f'吃了一个{name}！+{amount}饱食度', 1800)
+        self.save_data()
         self.refresh_panel()
 
     def start_work(self):
@@ -805,10 +830,11 @@ class DesktopPet(QWidget):
     def check_satiety(self):
         now = time.time()
         elapsed = now - self.last_satiety_check
-        if elapsed >= 3600:
-            hours = int(elapsed // 3600)
-            self.satiety = max(0, self.satiety - hours * SATIETY_DECAY_PER_HOUR)
-            self.last_satiety_check += hours * 3600
+        if elapsed > 0:
+            # 180 seconds decay 0.5 points -> (0.5 / 180.0) points per second
+            decay = elapsed * (0.5 / 180.0)
+            self.satiety = max(0.0, self.satiety - decay)
+            self.last_satiety_check = now
             if self.satiety <= 0 and self.state != 'hungry':
                 self.start_hungry()
 
@@ -840,7 +866,9 @@ class DesktopPet(QWidget):
                 else:
                     self.show_speech(f'已经工作{m}分钟啦，加油！', 2500)
 
+        self.save_data()
         self.refresh_panel()
+
 
     def update_physics(self):
         if self.state == 'drag':
@@ -940,7 +968,9 @@ class DesktopPet(QWidget):
 
     def closeEvent(self, event):
         logging.info('DesktopPet closing')
+        self.save_data()
         self.anim_timer.stop()
+
         self.physics_timer.stop()
         self.behavior_timer.stop()
         self.satiety_timer.stop()
