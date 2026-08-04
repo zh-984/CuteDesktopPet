@@ -443,6 +443,9 @@ class DesktopPet(QWidget):
         stretch_1 = resource_path('assets/processed/stretch_1.png')
         stretch_2 = resource_path('assets/processed/stretch_2.png')
         stretch_3 = resource_path('assets/processed/stretch_3.png')
+        stretch_4 = resource_path('assets/processed/stretch_4.png')
+        stretch_5 = resource_path('assets/processed/stretch_5.png')
+        stretch_6 = resource_path('assets/processed/stretch_6.png')
 
         self.raw_frames = {
             'idle': [resource_path('assets/processed/idle_0.png')],
@@ -453,10 +456,9 @@ class DesktopPet(QWidget):
                       resource_path('assets/processed/dance_1.png')],
             'sleep': [sleep_path],
             'pajamas': [pajamas_path],
-            'stretch': [stretch_1, stretch_2, stretch_3],
+            'stretch_night': [stretch_1, stretch_2, stretch_3],
+            'stretch_day': [stretch_4, stretch_5, stretch_6],
         }
-
-
 
         self.pixmaps = {}
         for state, paths in self.raw_frames.items():
@@ -481,7 +483,11 @@ class DesktopPet(QWidget):
         elif self.state == 'pajamas':
             img_state = 'pajamas' if 'pajamas' in self.pixmaps and self.pixmaps['pajamas'] else 'idle'
         elif self.state == 'stretch':
-            img_state = 'stretch' if 'stretch' in self.pixmaps and self.pixmaps['stretch'] else 'idle'
+            from datetime import datetime
+            ch = datetime.now().hour
+            is_night = (ch >= 23 or ch < 5)
+            s_key = 'stretch_night' if is_night else 'stretch_day'
+            img_state = s_key if s_key in self.pixmaps and self.pixmaps[s_key] else 'idle'
         elif self.state in ('playful_look', 'playful_eat', 'eat', 'hungry', 'playful_wave'):
             img_state = 'idle'
         elif self.state == 'playful_bounce':
@@ -497,6 +503,7 @@ class DesktopPet(QWidget):
         else:
             idx = self.frame_index % len(pms)
         pm = pms[idx]
+
 
         # Source assets face left; flip horizontally when we want to face right.
         if self.facing_right:
@@ -736,10 +743,10 @@ class DesktopPet(QWidget):
         self.stretch_step = 0
         self.vx = 0.0
         self.vy = 0.0
-        self.facing_right = True
         self.show_speech('站起来活动一下脖子、喝口水吧~', 4500)
         self.update_image()
         QTimer.singleShot(1000, self._stretch_step_2)
+
 
     def _stretch_step_2(self):
         if self.state == 'stretch':
