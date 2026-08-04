@@ -313,7 +313,22 @@ class DesktopPet(QWidget):
         self.ground_y = start_y
 
         self.pos_f = [float(start_x), float(start_y)]
-             # Hunger / work system
+        self.vx = 0.0
+        self.vy = 0.0
+        self.run_speed = 4.0
+        self.jump_strength = -14.0
+        self.gravity = 0.8
+        self.target_x = None
+        self.dance_timer = 0
+        self.playful_eat_timer = 0
+        self.eat_timer = 0
+        self.playful_sleep_timer = 0
+        self.playful_wave_timer = 0
+        self.playful_bounce_timer = 0
+        self.playful_bounce_base_y = 0
+
+        # Hunger / work system
+
         self.satiety = SATIETY_MAX
         self.candy_count = 0
         self.burger_count = 0
