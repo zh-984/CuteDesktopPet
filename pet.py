@@ -9,8 +9,15 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect
 from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
-SAVE_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pet_data.json')
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+SAVE_DATA_PATH = os.path.join(get_app_dir(), 'pet_data.json')
 log_path = os.path.join(os.environ.get('TEMP', os.getcwd()), 'CuteDesktopPet.log')
+
 
 logging.basicConfig(filename=log_path, level=logging.INFO, encoding='utf-8',
                     format='%(asctime)s %(levelname)s %(message)s')
@@ -994,8 +1001,6 @@ class DesktopPet(QWidget):
         work_text = '结束工作' if self.working else '开始工作'
         panel_text = '关闭状态栏' if self.panel_visible else '打开状态栏'
         actions = [
-            ('显示到屏幕中央', self.force_show),
-            ('待机', self.start_idle),
             ('跳跃', self.start_jump),
             ('跳舞', self.start_dance),
             (None, None),
@@ -1012,6 +1017,7 @@ class DesktopPet(QWidget):
                 a.triggered.connect(callback)
                 menu.addAction(a)
         menu.exec(pos)
+
 
     def toggle_work(self):
         if self.working:
