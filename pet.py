@@ -953,20 +953,18 @@ class DesktopPet(QWidget):
                 self.start_stretch()
 
             if now - self.last_candy >= 15 * 60:
-                self.satiety = min(SATIETY_MAX, self.satiety + CANDY_AMOUNT)
                 self.candy_count += 1
                 self.last_candy += 15 * 60
-                self.show_speech('🍬 获得一颗糖果！+2饱食度', 2000)
+                self.show_speech('🍬 获得一颗糖果！可用来恢复饱食度', 2000)
             if now - self.last_burger >= 2 * 60 * 60:
-                self.satiety = min(SATIETY_MAX, self.satiety + BURGER_AMOUNT)
                 self.burger_count += 1
                 self.last_burger += 2 * 60 * 60
-                self.show_speech('🍔 获得一个汉堡！+20饱食度', 2500)
+                self.show_speech('🍔 获得一个汉堡！可用来恢复饱食度', 2500)
             if now - self.last_cake >= 5 * 60 * 60:
-                self.satiety = min(SATIETY_MAX, self.satiety + CAKE_AMOUNT)
                 self.cake_count += 1
                 self.last_cake += 5 * 60 * 60
-                self.show_speech('🎂 获得一个蛋糕！+50饱食度', 3000)
+                self.show_speech('🎂 获得一个蛋糕！可用来恢复饱食度', 3000)
+
 
             # Report work duration every 30 minutes
             if now - self.last_work_duration_speech >= 30 * 60:
