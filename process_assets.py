@@ -171,19 +171,25 @@ def process_image(src_path):
 
 
 def main():
+    import sys
+    force = '--force' in sys.argv
     for state, files in frames.items():
         for i, fn in enumerate(files):
+            out_name = f'{state}_{i}.png'
+            out_path = os.path.join(OUT_DIR, out_name)
+            if os.path.exists(out_path) and not force:
+                print(f'[SKIP] Preserving user-processed asset: {out_path}')
+                continue
             src = os.path.join(SRC_DIR, fn)
             if not os.path.exists(src):
                 print(f'[WARN] missing {src}')
                 continue
             img = process_image(src)
-            out_name = f'{state}_{i}.png'
-            out_path = os.path.join(OUT_DIR, out_name)
             img.save(out_path)
             print(f'[OK] {out_path}')
 
 
 if __name__ == '__main__':
     main()
+
 

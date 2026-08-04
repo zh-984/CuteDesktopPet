@@ -119,8 +119,9 @@ class StatusPanel(QWidget):
 
         # Clickable row rectangles for feeding
         self._row_rects = {}
-        self._close_btn_rect = QRect(self.PANEL_W - 24, 6, 18, 18)
+        self._close_btn_rect = QRect(self.PANEL_W - 32, 6, 18, 18)
         self.hide()
+
 
     def update_data(self, candy, burger, cake, satiety, working, work_elapsed):
         self.candy_count = candy
@@ -400,6 +401,10 @@ class DesktopPet(QWidget):
         logging.info(f'Virtual screen rect: {self.screen_rect}')
 
     def load_frames(self):
+        sleep_path = resource_path('assets/processed/sleep.png')
+        if not os.path.exists(sleep_path):
+            sleep_path = resource_path('assets/sleep.png')
+
         self.raw_frames = {
             'idle': [resource_path('assets/processed/idle_0.png')],
             'run': [resource_path('assets/processed/run_0.png'),
@@ -407,8 +412,9 @@ class DesktopPet(QWidget):
             'jump': [resource_path('assets/processed/jump_0.png')],
             'dance': [resource_path('assets/processed/dance_0.png'),
                       resource_path('assets/processed/dance_1.png')],
-            'sleep': [resource_path('assets/sleep.png')],
+            'sleep': [sleep_path],
         }
+
 
         self.pixmaps = {}
         for state, paths in self.raw_frames.items():
