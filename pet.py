@@ -326,6 +326,9 @@ class DesktopPet(QWidget):
         self.playful_wave_timer = 0
         self.playful_bounce_timer = 0
         self.playful_bounce_base_y = 0
+        self.last_stretch_time = 0
+        self.last_night_speech_time = 0
+        self.stretch_step = 0
 
         # Hunger / work system
 
@@ -391,11 +394,17 @@ class DesktopPet(QWidget):
         try:
             with open(SAVE_DATA_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self.satiety = float(data.get('satiety', SATIETY_MAX))
+                loaded_satiety = float(data.get('satiety', SATIETY_MAX))
                 self.candy_count = int(data.get('candy_count', 0))
                 self.burger_count = int(data.get('burger_count', 0))
                 self.cake_count = int(data.get('cake_count', 0))
-                logging.info(f'Loaded pet data: {data}')
+                last_save = float(data.get('last_save_time', time.time()))
+                now = time.time()
+                offline_elapsed = max(0.0, now - last_save)
+                # Calculate offline decay (0.5 points per 180 seconds)
+                offline_decay = offline_elapsed * (0.5 / 180.0)
+                self.satiety = max(0.0, min(float(SATIETY_MAX), loaded_satiety - offline_decay))
+                logging.info(f'Loaded pet data: {data}, offline decay: {offline_decay:.2f}, current satiety: {self.satiety:.2f}')
         except Exception as e:
             logging.error(f'Failed to load pet data: {e}')
 
@@ -427,6 +436,14 @@ class DesktopPet(QWidget):
         if not os.path.exists(sleep_path):
             sleep_path = resource_path('assets/sleep.png')
 
+        pajamas_path = resource_path('assets/processed/pajamas.png')
+        if not os.path.exists(pajamas_path):
+            pajamas_path = sleep_path
+
+        stretch_1 = resource_path('assets/processed/stretch_1.png')
+        stretch_2 = resource_path('assets/processed/stretch_2.png')
+        stretch_3 = resource_path('assets/processed/stretch_3.png')
+
         self.raw_frames = {
             'idle': [resource_path('assets/processed/idle_0.png')],
             'run': [resource_path('assets/processed/run_0.png'),
@@ -435,7 +452,10 @@ class DesktopPet(QWidget):
             'dance': [resource_path('assets/processed/dance_0.png'),
                       resource_path('assets/processed/dance_1.png')],
             'sleep': [sleep_path],
+            'pajamas': [pajamas_path],
+            'stretch': [stretch_1, stretch_2, stretch_3],
         }
+
 
 
         self.pixmaps = {}
@@ -458,6 +478,10 @@ class DesktopPet(QWidget):
             img_state = 'run'
         elif self.state == 'playful_sleep':
             img_state = 'sleep' if 'sleep' in self.pixmaps and self.pixmaps['sleep'] else 'idle'
+        elif self.state == 'pajamas':
+            img_state = 'pajamas' if 'pajamas' in self.pixmaps and self.pixmaps['pajamas'] else 'idle'
+        elif self.state == 'stretch':
+            img_state = 'stretch' if 'stretch' in self.pixmaps and self.pixmaps['stretch'] else 'idle'
         elif self.state in ('playful_look', 'playful_eat', 'eat', 'hungry', 'playful_wave'):
             img_state = 'idle'
         elif self.state == 'playful_bounce':
@@ -467,8 +491,13 @@ class DesktopPet(QWidget):
         pms = self.pixmaps.get(img_state, self.pixmaps['idle'])
         if not pms:
             pms = self.pixmaps['idle']
-        idx = self.frame_index % len(pms)
+
+        if self.state == 'stretch':
+            idx = min(self.stretch_step, len(pms) - 1)
+        else:
+            idx = self.frame_index % len(pms)
         pm = pms[idx]
+
         # Source assets face left; flip horizontally when we want to face right.
         if self.facing_right:
             pm = pm.transformed(QTransform().scale(-1, 1))
@@ -601,18 +630,33 @@ class DesktopPet(QWidget):
         self.schedule_next_speech()
 
     def decide_behavior(self):
-        # Don't interrupt active movement or short animations.
-        if self.state in ('drag', 'jump', 'fall', 'run',
+        # Don't interrupt active movement, stretching, or short animations.
+        if self.state in ('drag', 'jump', 'fall', 'run', 'stretch',
                           'playful_look', 'playful_eat', 'eat',
                           'playful_sleep', 'playful_wave', 'playful_bounce'):
             return
+
         if self.satiety <= 0:
             if self.state != 'hungry':
                 self.start_hungry()
             return
+
+        # Check late night mode (>= 23:00 or < 05:00)
+        from datetime import datetime
+        current_hour = datetime.now().hour
+        if current_hour >= 23 or current_hour < 5:
+            now = time.time()
+            if now - self.last_night_speech_time >= 1800:
+                self.last_night_speech_time = now
+                self.show_speech('太晚啦，不许熬夜，快去睡觉吧~', 4000)
+            self.state = 'pajamas'
+            self.update_image()
+            return
+
         # Only change behavior sometimes, not every tick.
         if random.random() > 0.35:
             return
+
         r = random.random()
         if r < 0.18:
             self.start_idle()
@@ -685,6 +729,34 @@ class DesktopPet(QWidget):
         self.dance_timer = 0
         self.frame_index = 0
         self.update_image()
+
+    def start_stretch(self):
+        """Stretch 1-2-3 sequence with 1 second interval between frames."""
+        self.state = 'stretch'
+        self.stretch_step = 0
+        self.vx = 0.0
+        self.vy = 0.0
+        self.facing_right = True
+        self.show_speech('站起来活动一下脖子、喝口水吧~', 4500)
+        self.update_image()
+        QTimer.singleShot(1000, self._stretch_step_2)
+
+    def _stretch_step_2(self):
+        if self.state == 'stretch':
+            self.stretch_step = 1
+            self.update_image()
+            QTimer.singleShot(1000, self._stretch_step_3)
+
+    def _stretch_step_3(self):
+        if self.state == 'stretch':
+            self.stretch_step = 2
+            self.update_image()
+            QTimer.singleShot(2000, self._finish_stretch)
+
+    def _finish_stretch(self):
+        if self.state == 'stretch':
+            self.start_idle()
+
 
     def start_playful_look(self):
         self.state = 'playful_look'
@@ -867,6 +939,12 @@ class DesktopPet(QWidget):
                 self.start_hungry()
 
         if self.working and self.satiety > 0:
+            work_elapsed = now - self.work_start_time
+            # Continuous 45-minute work stretch reminder
+            if work_elapsed >= 45 * 60 and (now - self.last_stretch_time >= 40 * 60):
+                self.last_stretch_time = now
+                self.start_stretch()
+
             if now - self.last_candy >= 15 * 60:
                 self.satiety = min(SATIETY_MAX, self.satiety + CANDY_AMOUNT)
                 self.candy_count += 1
@@ -886,13 +964,13 @@ class DesktopPet(QWidget):
             # Report work duration every 30 minutes
             if now - self.last_work_duration_speech >= 30 * 60:
                 self.last_work_duration_speech = now
-                work_elapsed = now - self.work_start_time
                 h = int(work_elapsed // 3600)
                 m = int((work_elapsed % 3600) // 60)
                 if h > 0:
                     self.show_speech(f'已经工作{h}小时{m}分钟啦，加油！', 2500)
                 else:
                     self.show_speech(f'已经工作{m}分钟啦，加油！', 2500)
+
 
         self.save_data()
         self.refresh_panel()
@@ -1018,12 +1096,14 @@ class DesktopPet(QWidget):
         actions = [
             ('跳跃', self.start_jump),
             ('跳舞', self.start_dance),
+            ('伸懒腰', self.start_stretch),
             (None, None),
             (work_text, self.toggle_work),
             (panel_text, self.toggle_panel),
             (None, None),
             ('退出', self.close),
         ]
+
         for text, callback in actions:
             if text is None:
                 menu.addSeparator()
