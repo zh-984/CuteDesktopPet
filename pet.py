@@ -1139,11 +1139,11 @@ def cleanup(local_server, tray):
 
 
 def create_desktop_shortcut():
-    """Automatically create a desktop shortcut with 葡萄冻冻.ico when program starts."""
+    """Automatically create/update desktop shortcut with 葡萄冻冻.ico."""
     try:
         if sys.platform != 'win32':
             return
-        import winreg, subprocess
+        import winreg, subprocess, shutil
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
         desktop_path, _ = winreg.QueryValueEx(key, 'Desktop')
         desktop_path = os.path.expandvars(desktop_path)
@@ -1157,19 +1157,30 @@ def create_desktop_shortcut():
             exe_path = os.path.abspath(sys.argv[0])
             exe_dir = os.path.dirname(exe_path)
             
-        icon_path = os.path.join(exe_dir, '葡萄冻冻.ico')
-        if not os.path.exists(icon_path):
-            icon_path = os.path.join(exe_dir, '葡萄冻冻.png')
-        if not os.path.exists(icon_path):
-            icon_path = resource_path('assets/app_icon.ico')
-        if not os.path.exists(icon_path):
+        dest_icon = os.path.join(exe_dir, '葡萄冻冻.ico')
+        src_ico = resource_path('assets/葡萄冻冻.ico')
+        if not os.path.exists(src_ico):
+            src_ico = resource_path('assets/app_icon.ico')
+            
+        if os.path.exists(src_ico):
+            try:
+                shutil.copy2(src_ico, dest_icon)
+            except Exception:
+                pass
+
+        if os.path.exists(dest_icon):
+            icon_path = dest_icon
+        elif os.path.exists(src_ico):
+            icon_path = src_ico
+        else:
             icon_path = exe_path
             
-        ps_code = f"$s=(New-Object -COM WScript.Shell).CreateShortcut('{shortcut_path}'); $s.TargetPath='{exe_path}'; $s.WorkingDirectory='{exe_dir}'; $s.IconLocation='{icon_path}'; $s.Description='葡萄冻冻桌面宠物'; $s.Save()"
+        ps_code = f"$s=(New-Object -COM WScript.Shell).CreateShortcut('{shortcut_path}'); $s.TargetPath='{exe_path}'; $s.WorkingDirectory='{exe_dir}'; $s.IconLocation='{icon_path},0'; $s.Description='葡萄冻冻桌面宠物'; $s.Save()"
         subprocess.run(['powershell', '-NoProfile', '-Command', ps_code], capture_output=True, creationflags=0x08000000)
-        logging.info(f"Verified desktop shortcut at: {shortcut_path}")
+        logging.info(f"Verified desktop shortcut at: {shortcut_path} with icon: {icon_path}")
     except Exception as e:
         logging.error(f"Failed to create desktop shortcut: {e}")
+
 
 def main():
     logging.info('Application starting')
