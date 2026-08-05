@@ -488,7 +488,9 @@ class DesktopPet(QWidget):
             is_night = (ch >= 23 or ch < 5)
             s_key = 'stretch_night' if is_night else 'stretch_day'
             img_state = s_key if s_key in self.pixmaps and self.pixmaps[s_key] else 'idle'
-        elif self.state in ('playful_look', 'playful_eat', 'eat', 'hungry', 'playful_wave'):
+        elif self.state == 'hungry':
+            img_state = 'sleep' if 'sleep' in self.pixmaps and self.pixmaps['sleep'] else 'idle'
+        elif self.state in ('playful_look', 'playful_eat', 'eat', 'playful_wave'):
             img_state = 'idle'
         elif self.state == 'playful_bounce':
             img_state = 'jump'
@@ -504,7 +506,6 @@ class DesktopPet(QWidget):
             idx = self.frame_index % len(pms)
         pm = pms[idx]
 
-
         # Source assets face left; flip horizontally when we want to face right.
         if self.facing_right:
             pm = pm.transformed(QTransform().scale(-1, 1))
@@ -517,16 +518,7 @@ class DesktopPet(QWidget):
         painter = QPainter(result)
         painter.drawPixmap(0, 0, pm)
 
-        if self.state == 'hungry':
-            # Dark tint + hunger icon.
-            painter.setBrush(QColor(60, 60, 80, 110))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRect(result.rect())
-            painter.setPen(QColor(255, 255, 255))
-            font = QFont('Microsoft YaHei', 20)
-            painter.setFont(font)
-            painter.drawText(result.rect(), Qt.AlignmentFlag.AlignCenter, '饿')
-        elif self.state in ('playful_eat', 'eat'):
+        if self.state in ('playful_eat', 'eat'):
             # Draw a little snack near the mouth area.
             painter.setBrush(QColor(255, 180, 80))
             painter.setPen(Qt.PenStyle.NoPen)
@@ -553,6 +545,7 @@ class DesktopPet(QWidget):
             painter.setFont(font_xs)
             painter.drawText(result.width() // 2 + 24, result.height() // 4 - 28, 'z')
         elif self.state == 'playful_wave':
+
             # Waving hand overlay.
             painter.setPen(QColor(255, 160, 180))
             painter.setBrush(QColor(255, 160, 180))
