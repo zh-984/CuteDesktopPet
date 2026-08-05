@@ -6,7 +6,8 @@ import time
 import json
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon
 from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect
-from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath
+from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath, QIcon
+
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 def get_app_dir():
