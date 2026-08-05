@@ -529,21 +529,8 @@ class DesktopPet(QWidget):
             painter.setBrush(QColor(255, 220, 150))
             painter.drawEllipse(cx - 6, cy - 6, 12, 12)
         elif self.state == 'playful_sleep':
-            # Soft dark blue night tint
-            painter.setBrush(QColor(30, 30, 70, 70))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRect(result.rect())
-            # Floating 'Zzz' text
-            painter.setPen(QColor(180, 200, 255))
-            font = QFont('Microsoft YaHei', 18, QFont.Weight.Bold)
-            painter.setFont(font)
-            painter.drawText(result.width() // 2 - 10, result.height() // 4, 'Z')
-            font_s = QFont('Microsoft YaHei', 14, QFont.Weight.Bold)
-            painter.setFont(font_s)
-            painter.drawText(result.width() // 2 + 10, result.height() // 4 - 15, 'z')
-            font_xs = QFont('Microsoft YaHei', 10, QFont.Weight.Bold)
-            painter.setFont(font_xs)
-            painter.drawText(result.width() // 2 + 24, result.height() // 4 - 28, 'z')
+            pass
+
         elif self.state == 'playful_wave':
 
             # Waving hand overlay.
