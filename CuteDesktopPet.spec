@@ -5,7 +5,7 @@ a = Analysis(
     ['pet.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
+    datas=[('assets', 'assets'), ('assets/app_icon.ico', '.'), ('assets/app_icon.ico', '希柚图标.ico')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -32,7 +32,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/app_icon.ico',
 )
+
 coll = COLLECT(
     exe,
     a.binaries,

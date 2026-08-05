@@ -1137,6 +1137,39 @@ def cleanup(local_server, tray):
     QLocalServer.removeServer(SINGLETON_NAME)
 
 
+def create_desktop_shortcut():
+    """Automatically create a desktop shortcut with 希柚图标.ico when program starts."""
+    try:
+        if sys.platform != 'win32':
+            return
+        import winreg, subprocess
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
+        desktop_path, _ = winreg.QueryValueEx(key, 'Desktop')
+        desktop_path = os.path.expandvars(desktop_path)
+        
+        shortcut_path = os.path.join(desktop_path, '希柚桌面宠物.lnk')
+        
+        if getattr(sys, 'frozen', False):
+            exe_path = sys.executable
+            exe_dir = os.path.dirname(exe_path)
+        else:
+            exe_path = os.path.abspath(sys.argv[0])
+            exe_dir = os.path.dirname(exe_path)
+            
+        icon_path = os.path.join(exe_dir, '希柚图标.ico')
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(exe_dir, '希柚图标.png')
+        if not os.path.exists(icon_path):
+            icon_path = resource_path('assets/app_icon.ico')
+        if not os.path.exists(icon_path):
+            icon_path = exe_path
+            
+        ps_code = f"$s=(New-Object -COM WScript.Shell).CreateShortcut('{shortcut_path}'); $s.TargetPath='{exe_path}'; $s.WorkingDirectory='{exe_dir}'; $s.IconLocation='{icon_path}'; $s.Save()"
+        subprocess.run(['powershell', '-NoProfile', '-Command', ps_code], capture_output=True, creationflags=0x08000000)
+        logging.info(f"Verified desktop shortcut at: {shortcut_path}")
+    except Exception as e:
+        logging.error(f"Failed to create desktop shortcut: {e}")
+
 def main():
     logging.info('Application starting')
 
@@ -1144,6 +1177,9 @@ def main():
     # When the pet window closes, the whole application must quit.
     app.setQuitOnLastWindowClosed(True)
     app.setApplicationName('CuteDesktopPet')
+
+    # Automatically ensure desktop shortcut with 希柚图标
+    create_desktop_shortcut()
 
     # Singleton: if another instance is running, tell it to show and exit.
     probe = QLocalSocket()
@@ -1174,9 +1210,13 @@ def main():
     logging.info('Pet window shown')
 
     if QSystemTrayIcon.isSystemTrayAvailable():
-        tray = QSystemTrayIcon(app)
-        tray.setToolTip('桌面宠物')
+        tray_icon_path = resource_path('assets/app_icon.ico')
+        if not os.path.exists(tray_icon_path):
+            tray_icon_path = resource_path('assets/processed/idle_0.png')
+        tray = QSystemTrayIcon(QIcon(tray_icon_path), app)
+        tray.setToolTip('希柚桌面宠物')
         tray.setVisible(True)
+
         menu = QMenu()
 
         show_action = QAction('显示', menu)
