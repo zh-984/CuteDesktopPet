@@ -5,7 +5,8 @@ a = Analysis(
     ['pet.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('assets/app_icon.ico', '.'), ('assets/app_icon.ico', '希柚图标.ico')],
+    datas=[('assets', 'assets'), ('assets/app_icon.ico', '.'), ('assets/葡萄冻冻.ico', '.'), ('assets/葡萄冻冻.ico', '葡萄冻冻.ico'), ('葡萄冻冻.png', '.')],
+
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
