@@ -231,37 +231,47 @@ class TodoPanel(QWidget):
                 background: #ffffff;
                 border: 1px solid #c7b8ea;
                 border-radius: 5px;
-                padding: 1px 18px 1px 5px;
+                padding: 1px 32px 1px 5px;
                 color: #4a3a6a;
                 font-size: 11px;
             }
             QTimeEdit::up-button {
                 subcontrol-origin: border;
-                subcontrol-position: top right;
+                subcontrol-position: center right;
+                right: 15px;
                 width: 14px;
-                height: 10px;
+                height: 16px;
                 background: #f0e6ff;
                 border-left: 1px solid #c7b8ea;
-                border-bottom: 1px solid #e0d0fa;
-                border-top-right-radius: 4px;
+                border-right: 1px solid #e0d0fa;
             }
             QTimeEdit::up-button:hover {
                 background: #d8b0ff;
             }
             QTimeEdit::down-button {
                 subcontrol-origin: border;
-                subcontrol-position: bottom right;
+                subcontrol-position: center right;
+                right: 1px;
                 width: 14px;
-                height: 10px;
+                height: 16px;
                 background: #f0e6ff;
-                border-left: 1px solid #c7b8ea;
+                border-top-right-radius: 4px;
                 border-bottom-right-radius: 4px;
             }
             QTimeEdit::down-button:hover {
                 background: #d8b0ff;
             }
+            QTimeEdit::up-arrow {
+                width: 7px;
+                height: 7px;
+            }
+            QTimeEdit::down-arrow {
+                width: 7px;
+                height: 7px;
+            }
         """)
         time_row.addWidget(self.time_edit, 1)
+
 
 
         add_btn = QPushButton("添加")
