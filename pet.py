@@ -731,6 +731,8 @@ class DesktopPet(QWidget):
             'burger_count': self.burger_count,
             'cake_count': self.cake_count,
             'todo_list': self.todo_list,
+            'working': self.working,
+            'work_start_time': self.work_start_time,
             'last_save_time': time.time(),
         }
         try:
@@ -751,6 +753,8 @@ class DesktopPet(QWidget):
                 self.cake_count = int(data.get('cake_count', 0))
                 self.todo_list = data.get('todo_list', [])
                 self.todo_panel.refresh_items()
+                self.working = bool(data.get('working', False))
+                self.work_start_time = float(data.get('work_start_time', 0))
                 last_save = float(data.get('last_save_time', time.time()))
                 now = time.time()
                 offline_elapsed = max(0.0, now - last_save)
@@ -758,6 +762,7 @@ class DesktopPet(QWidget):
                 offline_decay = offline_elapsed * (0.5 / 180.0)
                 self.satiety = max(0.0, min(float(SATIETY_MAX), loaded_satiety - offline_decay))
                 logging.info(f'Loaded pet data: {data}, offline decay: {offline_decay:.2f}, current satiety: {self.satiety:.2f}')
+
         except Exception as e:
             logging.error(f'Failed to load pet data: {e}')
 
@@ -1207,9 +1212,9 @@ class DesktopPet(QWidget):
             self.todo_panel.raise_()
 
     def get_work_elapsed(self):
-        if not self.working:
+        if not self.working or self.work_start_time <= 0:
             return 0
-        return time.time() - self.work_start_time
+        return max(0.0, time.time() - self.work_start_time)
 
     def refresh_panel(self):
         uncompleted_count = sum(1 for item in self.todo_list if not item.get('completed', False))
@@ -1282,18 +1287,25 @@ class DesktopPet(QWidget):
             self.show_speech('虽然肚子饿饿，但我也会陪你一起努力工作赚零食的！💪', 3000)
         else:
             self.show_speech('开始工作啦！', 2000)
+        self.save_data()
         self.refresh_panel()
 
     def end_work(self):
         if self.working:
-            self.working = False
             elapsed = self.get_work_elapsed()
+            self.working = False
+            self.work_start_time = 0
             h = int(elapsed // 3600)
             m = int((elapsed % 3600) // 60)
-            self.show_speech(f'下班啦！本次工作{h}小时{m}分钟~', 3000)
+            if h > 0:
+                self.show_speech(f'下班啦！本次工作{h}小时{m}分钟~', 3000)
+            else:
+                self.show_speech(f'下班啦！本次工作{m}分钟~', 3000)
             if self.satiety <= 0:
                 self.start_hungry()
+            self.save_data()
             self.refresh_panel()
+
 
 
     def check_satiety(self):
