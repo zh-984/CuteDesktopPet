@@ -231,46 +231,53 @@ class TodoPanel(QWidget):
                 background: #ffffff;
                 border: 1px solid #c7b8ea;
                 border-radius: 5px;
-                padding: 1px 32px 1px 5px;
+                padding: 1px 40px 1px 5px;
                 color: #4a3a6a;
                 font-size: 11px;
             }
             QTimeEdit::up-button {
                 subcontrol-origin: border;
                 subcontrol-position: center right;
-                right: 15px;
+                right: 22px;
                 width: 14px;
-                height: 16px;
-                background: #f0e6ff;
-                border-left: 1px solid #c7b8ea;
-                border-right: 1px solid #e0d0fa;
+                height: 15px;
+                background: #9c27b0;
+                border-radius: 3px;
             }
             QTimeEdit::up-button:hover {
-                background: #d8b0ff;
+                background: #ab47bc;
+            }
+            QTimeEdit::up-button:pressed {
+                background: #7b1fa2;
+            }
+            QTimeEdit::up-arrow {
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><polygon points='5,2 8,7 2,7' fill='%23ffffff'/></svg>");
+                width: 8px;
+                height: 8px;
             }
             QTimeEdit::down-button {
                 subcontrol-origin: border;
                 subcontrol-position: center right;
-                right: 1px;
+                right: 5px;
                 width: 14px;
-                height: 16px;
-                background: #f0e6ff;
-                border-top-right-radius: 4px;
-                border-bottom-right-radius: 4px;
+                height: 15px;
+                background: #9c27b0;
+                border-radius: 3px;
             }
             QTimeEdit::down-button:hover {
-                background: #d8b0ff;
+                background: #ab47bc;
             }
-            QTimeEdit::up-arrow {
-                width: 7px;
-                height: 7px;
+            QTimeEdit::down-button:pressed {
+                background: #7b1fa2;
             }
             QTimeEdit::down-arrow {
-                width: 7px;
-                height: 7px;
+                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><polygon points='2,3 8,3 5,8' fill='%23ffffff'/></svg>");
+                width: 8px;
+                height: 8px;
             }
         """)
         time_row.addWidget(self.time_edit, 1)
+
 
 
 
