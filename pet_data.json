@@ -1,15 +1,8 @@
 {
-  "satiety": 0.0,
-  "candy_count": 2,
+  "satiety": 50.0,
+  "candy_count": 3,
   "burger_count": 0,
   "cake_count": 0,
-  "todo_list": [
-    {
-      "id": 12345,
-      "text": "写测试报告",
-      "target_time": "23:59",
-      "completed": true
-    }
-  ],
-  "last_save_time": 1786085222.5406442
+  "todo_list": [],
+  "last_save_time": 1786088197.3398447
 }

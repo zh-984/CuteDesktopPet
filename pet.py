@@ -162,9 +162,10 @@ class TodoItemWidget(QWidget):
 
     def _update_style(self):
         if self.checkbox.isChecked():
-            self.text_label.setStyleSheet("color: #a090c0; font-size: 12px; text-decoration: line-through;")
+            self.text_label.setStyleSheet("color: #a090c0; font-size: 11px; font-weight: bold; text-decoration: line-through;")
         else:
             self.text_label.setStyleSheet("color: #4a3a6a; font-size: 11px; font-weight: bold;")
+
 
     def _handle_check(self, state):
         is_checked = (state == Qt.CheckState.Checked.value or state == 2 or state == True)
@@ -345,6 +346,8 @@ class TodoPanel(QWidget):
             if self._close_btn_rect.contains(pos):
                 self.pet.toggle_todo_panel()
                 return
+        super().mousePressEvent(event)
+
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -481,6 +484,8 @@ class StatusPanel(QWidget):
                 if rect.contains(pos):
                     self.pet.feed_food(food)
                     return
+        super().mousePressEvent(event)
+
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -1286,7 +1291,10 @@ class DesktopPet(QWidget):
             h = int(elapsed // 3600)
             m = int((elapsed % 3600) // 60)
             self.show_speech(f'下班啦！本次工作{h}小时{m}分钟~', 3000)
+            if self.satiety <= 0:
+                self.start_hungry()
             self.refresh_panel()
+
 
     def check_satiety(self):
         now = time.time()
