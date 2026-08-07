@@ -175,7 +175,7 @@ class TodoItemWidget(QWidget):
 class TodoPanel(QWidget):
     """Floating scrollable todo list panel."""
     PANEL_W = 230
-    PANEL_H = 310
+    PANEL_H = 240
 
     def __init__(self, pet):
         super().__init__()
