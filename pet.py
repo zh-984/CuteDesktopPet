@@ -115,7 +115,7 @@ class TodoItemWidget(QWidget):
         self.on_delete = on_delete
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(6)
 
         self.checkbox = QCheckBox()
@@ -128,20 +128,20 @@ class TodoItemWidget(QWidget):
         text_layout.setSpacing(2)
 
         self.text_label = QLabel(item_data.get('text', ''))
-        self.text_label.setStyleSheet("color: #4a3a6a; font-size: 12px; font-weight: bold;")
+        self.text_label.setStyleSheet("color: #4a3a6a; font-size: 11px; font-weight: bold;")
         text_layout.addWidget(self.text_label)
 
         target_time = item_data.get('target_time', '')
         if target_time:
             time_label = QLabel(f"⏰ 截止 {target_time}")
-            time_label.setStyleSheet("color: #8870b0; font-size: 10px;")
+            time_label.setStyleSheet("color: #8870b0; font-size: 9px;")
             text_layout.addWidget(time_label)
 
         layout.addLayout(text_layout, 1)
 
         # Delete button
         del_btn = QPushButton("✕")
-        del_btn.setFixedSize(20, 20)
+        del_btn.setFixedSize(18, 18)
         del_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -163,7 +163,7 @@ class TodoItemWidget(QWidget):
         if self.checkbox.isChecked():
             self.text_label.setStyleSheet("color: #a090c0; font-size: 12px; text-decoration: line-through;")
         else:
-            self.text_label.setStyleSheet("color: #4a3a6a; font-size: 12px; font-weight: bold;")
+            self.text_label.setStyleSheet("color: #4a3a6a; font-size: 11px; font-weight: bold;")
 
     def _handle_check(self, state):
         is_checked = (state == Qt.CheckState.Checked.value or state == 2 or state == True)
@@ -174,8 +174,8 @@ class TodoItemWidget(QWidget):
 
 class TodoPanel(QWidget):
     """Floating scrollable todo list panel."""
-    PANEL_W = 290
-    PANEL_H = 380
+    PANEL_W = 230
+    PANEL_H = 310
 
     def __init__(self, pet):
         super().__init__()
@@ -188,18 +188,18 @@ class TodoPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(self.PANEL_W, self.PANEL_H)
 
-        self._close_btn_rect = QRect(self.PANEL_W - 32, 10, 20, 20)
+        self._close_btn_rect = QRect(self.PANEL_W - 28, 8, 18, 18)
 
         # Main Layout container for widgets
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 34, 14, 14)
+        main_layout.setContentsMargins(10, 28, 10, 10)
         main_layout.setSpacing(8)
 
         # Input Box
         input_box = QWidget()
         input_box.setStyleSheet("background: rgba(245, 240, 255, 220); border-radius: 8px;")
         input_layout = QVBoxLayout(input_box)
-        input_layout.setContentsMargins(8, 8, 8, 8)
+        input_layout.setContentsMargins(6, 6, 6, 6)
         input_layout.setSpacing(6)
 
         self.input_edit = QLineEdit()
@@ -209,9 +209,9 @@ class TodoPanel(QWidget):
                 background: #ffffff;
                 border: 1px solid #c7b8ea;
                 border-radius: 6px;
-                padding: 4px 8px;
+                padding: 3px 6px;
                 color: #4a3a6a;
-                font-size: 12px;
+                font-size: 11px;
             }
         """)
         input_layout.addWidget(self.input_edit)
@@ -239,7 +239,7 @@ class TodoPanel(QWidget):
         time_row.addWidget(self.time_edit, 1)
 
         add_btn = QPushButton("添加")
-        add_btn.setFixedSize(50, 24)
+        add_btn.setFixedSize(42, 22)
         add_btn.setStyleSheet("""
             QPushButton {
                 background-color: #9c27b0;
