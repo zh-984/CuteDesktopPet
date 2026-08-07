@@ -41,7 +41,7 @@
 - **手控喂食解耦**：工作获得的食材存入仓库，不强制自动吞咽，用户可在状态栏自由选择食物进行喂养！
 
 <p align="center">
-  <img src="assets/docs/status_panel.png" width="220" alt="状态栏">
+  <img src="状态栏.png" width="220" alt="状态栏">
 </p>
 
 ### 4. 📝 桌面待办清单与准时完成奖励 (Todo List & Timed Rewards)
@@ -50,8 +50,9 @@
 - **状态栏数智联动**：状态栏新增 **“📝 待办事项: X 项”** 显示未完成项数量，点击该行可直接快捷呼出/收起待办清单。
 
 <p align="center">
-  <img src="assets/docs/todo_panel.png" width="250" alt="待办清单">
+  <img src="待办清单.png" width="250" alt="待办清单">
 </p>
+
 
 
 ### 5. 🍇 自定义“葡萄冻冻”图标与桌面快捷方式 (Icon & Shortcut)
