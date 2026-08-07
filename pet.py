@@ -4,9 +4,14 @@ import random
 import logging
 import time
 import json
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon
-from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon,
+    QLineEdit, QTimeEdit, QPushButton, QCheckBox, QScrollArea,
+    QVBoxLayout, QHBoxLayout, QFrame
+)
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QTime
 from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath, QIcon
+
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
@@ -101,11 +106,282 @@ class SpeechBubble(QWidget):
         QTimer.singleShot(duration, self.hide)
 
 
+class TodoItemWidget(QWidget):
+    """Widget representing a single todo item with checkbox, text, time badge, and delete button."""
+    def __init__(self, item_data, on_complete, on_delete):
+        super().__init__()
+        self.item_data = item_data
+        self.on_complete = on_complete
+        self.on_delete = on_delete
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(item_data.get('completed', False))
+        self.checkbox.stateChanged.connect(self._handle_check)
+        layout.addWidget(self.checkbox)
+
+        # Text and Time layout
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+
+        self.text_label = QLabel(item_data.get('text', ''))
+        self.text_label.setStyleSheet("color: #4a3a6a; font-size: 12px; font-weight: bold;")
+        text_layout.addWidget(self.text_label)
+
+        target_time = item_data.get('target_time', '')
+        if target_time:
+            time_label = QLabel(f"⏰ 截止 {target_time}")
+            time_label.setStyleSheet("color: #8870b0; font-size: 10px;")
+            text_layout.addWidget(time_label)
+
+        layout.addLayout(text_layout, 1)
+
+        # Delete button
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(20, 20)
+        del_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #b0a0cc;
+                font-weight: bold;
+                border: none;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                color: #e57373;
+            }
+        """)
+        del_btn.clicked.connect(lambda: self.on_delete(self.item_data))
+        layout.addWidget(del_btn)
+
+        self._update_style()
+
+    def _update_style(self):
+        if self.checkbox.isChecked():
+            self.text_label.setStyleSheet("color: #a090c0; font-size: 12px; text-decoration: line-through;")
+        else:
+            self.text_label.setStyleSheet("color: #4a3a6a; font-size: 12px; font-weight: bold;")
+
+    def _handle_check(self, state):
+        is_checked = (state == Qt.CheckState.Checked.value or state == 2 or state == True)
+        self.item_data['completed'] = is_checked
+        self._update_style()
+        self.on_complete(self.item_data, is_checked)
+
+
+class TodoPanel(QWidget):
+    """Floating scrollable todo list panel."""
+    PANEL_W = 290
+    PANEL_H = 380
+
+    def __init__(self, pet):
+        super().__init__()
+        self.pet = pet
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(self.PANEL_W, self.PANEL_H)
+
+        self._close_btn_rect = QRect(self.PANEL_W - 32, 10, 20, 20)
+
+        # Main Layout container for widgets
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 34, 14, 14)
+        main_layout.setSpacing(8)
+
+        # Input Box
+        input_box = QWidget()
+        input_box.setStyleSheet("background: rgba(245, 240, 255, 220); border-radius: 8px;")
+        input_layout = QVBoxLayout(input_box)
+        input_layout.setContentsMargins(8, 8, 8, 8)
+        input_layout.setSpacing(6)
+
+        self.input_edit = QLineEdit()
+        self.input_edit.setPlaceholderText("添加新待办...")
+        self.input_edit.setStyleSheet("""
+            QLineEdit {
+                background: #ffffff;
+                border: 1px solid #c7b8ea;
+                border-radius: 6px;
+                padding: 4px 8px;
+                color: #4a3a6a;
+                font-size: 12px;
+            }
+        """)
+        input_layout.addWidget(self.input_edit)
+
+        time_row = QHBoxLayout()
+        time_row.setSpacing(6)
+        
+        time_label = QLabel("预计完成:")
+        time_label.setStyleSheet("color: #6a5a8a; font-size: 11px;")
+        time_row.addWidget(time_label)
+
+        self.time_edit = QTimeEdit()
+        self.time_edit.setTime(QTime.currentTime().addSecs(3600))
+        self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit.setStyleSheet("""
+            QTimeEdit {
+                background: #ffffff;
+                border: 1px solid #c7b8ea;
+                border-radius: 6px;
+                padding: 2px 6px;
+                color: #4a3a6a;
+                font-size: 11px;
+            }
+        """)
+        time_row.addWidget(self.time_edit, 1)
+
+        add_btn = QPushButton("添加")
+        add_btn.setFixedSize(50, 24)
+        add_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9c27b0;
+                color: #ffffff;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #ab47bc;
+            }
+        """)
+        add_btn.clicked.connect(self.add_todo)
+        time_row.addWidget(add_btn)
+
+        input_layout.addLayout(time_row)
+        main_layout.addWidget(input_box)
+
+        # Scroll Area for Todo Items
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: rgba(220, 210, 240, 100);
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #b39ddb;
+                border-radius: 3px;
+            }
+        """)
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background: transparent;")
+        self.items_layout = QVBoxLayout(self.scroll_content)
+        self.items_layout.setContentsMargins(0, 0, 0, 0)
+        self.items_layout.setSpacing(6)
+        self.items_layout.addStretch()
+
+        self.scroll_area.setWidget(self.scroll_content)
+        main_layout.addWidget(self.scroll_area, 1)
+
+        self.hide()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.pos()
+            if self._close_btn_rect.contains(pos):
+                self.pet.toggle_todo_panel()
+                return
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Rounded background
+        path = QPainterPath()
+        path.addRoundedRect(6, 6, self.PANEL_W - 12, self.PANEL_H - 12, 12, 12)
+        p.fillPath(path, QColor(255, 255, 255, 240))
+
+        # Border
+        pen = p.pen()
+        pen.setColor(QColor(179, 157, 219))
+        pen.setWidth(2)
+        p.setPen(pen)
+        p.drawPath(path)
+
+        # Title
+        p.setPen(QColor(74, 58, 106))
+        font_title = QFont('Microsoft YaHei', 11, QFont.Weight.Bold)
+        p.setFont(font_title)
+        p.drawText(QRect(0, 8, self.PANEL_W, 22), Qt.AlignmentFlag.AlignCenter, '📝 待办清单')
+
+        # Close button '✕'
+        p.setPen(QColor(160, 140, 190))
+        font_close = QFont('Microsoft YaHei', 10, QFont.Weight.Bold)
+        p.setFont(font_close)
+        p.drawText(self._close_btn_rect, Qt.AlignmentFlag.AlignCenter, '✕')
+        p.end()
+
+    def refresh_items(self):
+        while self.items_layout.count() > 0:
+            child = self.items_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        for item_data in self.pet.todo_list:
+            item_widget = TodoItemWidget(item_data, self.on_item_completed, self.on_item_deleted)
+            item_widget.setStyleSheet("background: rgba(248, 245, 255, 220); border-radius: 6px;")
+            self.items_layout.addWidget(item_widget)
+
+        self.items_layout.addStretch()
+
+    def add_todo(self):
+        text = self.input_edit.text().strip()
+        if not text:
+            return
+        target_time = self.time_edit.time().toString("HH:mm")
+        item_data = {
+            'id': time.time(),
+            'text': text,
+            'target_time': target_time,
+            'completed': False
+        }
+        self.pet.todo_list.append(item_data)
+        self.input_edit.clear()
+        self.time_edit.setTime(QTime.currentTime().addSecs(3600))
+        self.refresh_items()
+        self.pet.save_data()
+        self.pet.refresh_panel()
+
+    def on_item_completed(self, item_data, is_completed):
+        item_data['completed'] = is_completed
+        if is_completed:
+            now_str = time.strftime("%H:%M")
+            target_time = item_data.get('target_time', '')
+            if target_time and now_str <= target_time:
+                self.pet.candy_count += 1
+                self.pet.show_speech("准时完成待办！🍬 获得1颗糖果！", 3000)
+            else:
+                self.pet.show_speech("太棒啦，又完成了一项待办！💪", 2500)
+        self.pet.save_data()
+        self.pet.refresh_panel()
+
+
+    def on_item_deleted(self, item_data):
+        self.pet.todo_list = [i for i in self.pet.todo_list if i.get('id') != item_data.get('id')]
+        self.refresh_items()
+        self.pet.save_data()
+        self.pet.refresh_panel()
+
+
 class StatusPanel(QWidget):
-    """Status panel that shows food counts, satiety, work duration, and allows feeding."""
+    """Status panel that shows food counts, satiety, work duration, todo count, and allows feeding."""
 
     PANEL_W = 180
-    PANEL_H = 155
+    PANEL_H = 175
 
     def __init__(self, pet):
         super().__init__()
@@ -124,20 +400,22 @@ class StatusPanel(QWidget):
         self.satiety = SATIETY_MAX
         self.working = False
         self.work_elapsed = 0
+        self.todo_count = 0
 
-        # Clickable row rectangles for feeding
+        # Clickable row rectangles
         self._row_rects = {}
         self._close_btn_rect = QRect(self.PANEL_W - 32, 6, 18, 18)
+        self._todo_rect = QRect(14, 130, self.PANEL_W - 28, 16)
         self.hide()
 
-
-    def update_data(self, candy, burger, cake, satiety, working, work_elapsed):
+    def update_data(self, candy, burger, cake, satiety, working, work_elapsed, todo_count=0):
         self.candy_count = candy
         self.burger_count = burger
         self.cake_count = cake
         self.satiety = satiety
         self.working = working
         self.work_elapsed = work_elapsed
+        self.todo_count = todo_count
         self.update()
 
     def mousePressEvent(self, event):
@@ -145,6 +423,9 @@ class StatusPanel(QWidget):
             pos = event.pos()
             if self._close_btn_rect.contains(pos):
                 self.pet.toggle_panel()
+                return
+            if hasattr(self, '_todo_rect') and self._todo_rect.contains(pos):
+                self.pet.toggle_todo_panel()
                 return
             for food, rect in self._row_rects.items():
                 if rect.contains(pos):
@@ -252,8 +533,17 @@ class StatusPanel(QWidget):
         p.setPen(pen)
         p.drawRoundedRect(bar_x, bar_y, bar_w, bar_h, 4, 4)
 
-        y += bar_h + 6
+        y += bar_h + 4
 
+        # 待办事项数量行 (插入在饱食度与工作时间之间)
+        p.setPen(QColor(74, 58, 106))
+        p.setFont(font_small)
+        self._todo_rect = QRect(pad, y, self.PANEL_W - pad * 2, 16)
+        p.drawText(pad, y + 11, f'📝 待办事项: {self.todo_count} 项')
+
+        y += 17
+
+        # 工作时间
         p.setPen(QColor(74, 58, 106))
         p.setFont(font_small)
         if self.working:
@@ -265,6 +555,7 @@ class StatusPanel(QWidget):
         p.drawText(pad, y + 10, work_text)
 
         p.end()
+
 
 
 
@@ -299,9 +590,12 @@ class DesktopPet(QWidget):
         self.label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.label.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
 
+        self.todo_list = []
         self.bubble = SpeechBubble()
         self.status_panel = StatusPanel(self)
         self.panel_visible = False
+        self.todo_panel = TodoPanel(self)
+        self.todo_panel_visible = False
         self.sleep_pixmap = None
         self.load_frames()
 
@@ -381,6 +675,7 @@ class DesktopPet(QWidget):
             'candy_count': self.candy_count,
             'burger_count': self.burger_count,
             'cake_count': self.cake_count,
+            'todo_list': self.todo_list,
             'last_save_time': time.time(),
         }
         try:
@@ -399,6 +694,8 @@ class DesktopPet(QWidget):
                 self.candy_count = int(data.get('candy_count', 0))
                 self.burger_count = int(data.get('burger_count', 0))
                 self.cake_count = int(data.get('cake_count', 0))
+                self.todo_list = data.get('todo_list', [])
+                self.todo_panel.refresh_items()
                 last_save = float(data.get('last_save_time', time.time()))
                 now = time.time()
                 offline_elapsed = max(0.0, now - last_save)
@@ -408,6 +705,7 @@ class DesktopPet(QWidget):
                 logging.info(f'Loaded pet data: {data}, offline decay: {offline_decay:.2f}, current satiety: {self.satiety:.2f}')
         except Exception as e:
             logging.error(f'Failed to load pet data: {e}')
+
 
     def force_show(self):
         logging.info('force_show called')
@@ -824,20 +1122,34 @@ class DesktopPet(QWidget):
         self.show_speech('我饿了，快喂我吃东西...', 3000)
 
     def update_panel_position(self):
-        if not self.panel_visible:
-            return
         px = int(self.pos_f[0])
         py = int(self.pos_f[1])
-        pw = self.status_panel.width()
-        ph = self.status_panel.height()
+        screen_left = self.screen_rect.left()
         screen_right = self.screen_rect.right()
-        if px + self.pet_size.width() + 10 + pw <= screen_right:
-            ix = px + self.pet_size.width() + 10
-        else:
-            ix = px - pw - 10
-        iy = py
-        self.status_panel.move(ix, iy)
-        self.status_panel.raise_()
+        screen_top = self.screen_rect.top()
+        screen_bottom = self.screen_rect.bottom()
+
+        if self.panel_visible:
+            pw = self.status_panel.width()
+            ph = self.status_panel.height()
+            if px + self.pet_size.width() + 10 + pw <= screen_right:
+                ix = px + self.pet_size.width() + 10
+            else:
+                ix = px - pw - 10
+            iy = py
+            self.status_panel.move(ix, iy)
+            self.status_panel.raise_()
+
+        if self.todo_panel_visible:
+            tw = self.todo_panel.width()
+            th = self.todo_panel.height()
+            if px - tw - 10 >= screen_left:
+                tx = px - tw - 10
+            else:
+                tx = px + self.pet_size.width() + 10
+            ty = max(screen_top, min(py, screen_bottom - th))
+            self.todo_panel.move(tx, ty)
+            self.todo_panel.raise_()
 
     def get_work_elapsed(self):
         if not self.working:
@@ -845,8 +1157,7 @@ class DesktopPet(QWidget):
         return time.time() - self.work_start_time
 
     def refresh_panel(self):
-        if not self.panel_visible:
-            return
+        uncompleted_count = sum(1 for item in self.todo_list if not item.get('completed', False))
         elapsed = self.get_work_elapsed()
         self.status_panel.update_data(
             self.candy_count,
@@ -855,8 +1166,10 @@ class DesktopPet(QWidget):
             self.satiety,
             self.working,
             elapsed,
+            uncompleted_count,
         )
         self.update_panel_position()
+
 
     def toggle_panel(self):
         self.panel_visible = not self.panel_visible
@@ -866,6 +1179,16 @@ class DesktopPet(QWidget):
             self.status_panel.raise_()
         else:
             self.status_panel.hide()
+
+    def toggle_todo_panel(self):
+        self.todo_panel_visible = not self.todo_panel_visible
+        if self.todo_panel_visible:
+            self.todo_panel.refresh_items()
+            self.update_panel_position()
+            self.todo_panel.show()
+            self.todo_panel.raise_()
+        else:
+            self.todo_panel.hide()
 
     def feed_food(self, food_key):
         """Feed the pet with a specific food from inventory."""
@@ -893,9 +1216,6 @@ class DesktopPet(QWidget):
         self.refresh_panel()
 
     def start_work(self):
-        if self.satiety <= 0:
-            self.start_hungry()
-            return
         self.working = True
         now = time.time()
         self.work_start_time = now
@@ -903,7 +1223,10 @@ class DesktopPet(QWidget):
         self.last_burger = now
         self.last_cake = now
         self.last_work_duration_speech = now
-        self.show_speech('开始工作啦！', 2000)
+        if self.satiety <= 0:
+            self.show_speech('虽然肚子饿饿，但我也会陪你一起努力工作赚零食的！💪', 3000)
+        else:
+            self.show_speech('开始工作啦！', 2000)
         self.refresh_panel()
 
     def end_work(self):
@@ -923,10 +1246,10 @@ class DesktopPet(QWidget):
             decay = elapsed * (0.5 / 180.0)
             self.satiety = max(0.0, self.satiety - decay)
             self.last_satiety_check = now
-            if self.satiety <= 0 and self.state != 'hungry':
+            if self.satiety <= 0 and self.state != 'hungry' and not self.working:
                 self.start_hungry()
 
-        if self.working and self.satiety > 0:
+        if self.working:
             work_elapsed = now - self.work_start_time
             # Continuous 45-minute work stretch reminder
             if work_elapsed >= 45 * 60 and (now - self.last_stretch_time >= 40 * 60):
@@ -946,7 +1269,6 @@ class DesktopPet(QWidget):
                 self.last_cake += 5 * 60 * 60
                 self.show_speech('🎂 获得一个蛋糕！可用来恢复饱食度', 3000)
 
-
             # Report work duration every 30 minutes
             if now - self.last_work_duration_speech >= 30 * 60:
                 self.last_work_duration_speech = now
@@ -957,9 +1279,9 @@ class DesktopPet(QWidget):
                 else:
                     self.show_speech(f'已经工作{m}分钟啦，加油！', 2500)
 
-
         self.save_data()
         self.refresh_panel()
+
 
 
     def update_physics(self):
@@ -1079,6 +1401,7 @@ class DesktopPet(QWidget):
         menu = QMenu(self)
         work_text = '结束工作' if self.working else '开始工作'
         panel_text = '关闭状态栏' if self.panel_visible else '打开状态栏'
+        todo_text = '关闭待办清单' if self.todo_panel_visible else '打开待办清单'
         actions = [
             ('跳跃', self.start_jump),
             ('跳舞', self.start_dance),
@@ -1086,6 +1409,7 @@ class DesktopPet(QWidget):
             (None, None),
             (work_text, self.toggle_work),
             (panel_text, self.toggle_panel),
+            (todo_text, self.toggle_todo_panel),
             (None, None),
             ('退出', self.close),
         ]
@@ -1098,6 +1422,7 @@ class DesktopPet(QWidget):
                 a.triggered.connect(callback)
                 menu.addAction(a)
         menu.exec(pos)
+
 
 
     def toggle_work(self):
@@ -1247,6 +1572,11 @@ def main():
         panel_action = QAction('状态栏', menu)
         panel_action.triggered.connect(pet.toggle_panel)
         menu.addAction(panel_action)
+
+        todo_action = QAction('待办清单', menu)
+        todo_action.triggered.connect(pet.toggle_todo_panel)
+        menu.addAction(todo_action)
+
 
         menu.addSeparator()
         quit_action = QAction('退出', menu)
