@@ -7,8 +7,9 @@ import json
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon,
     QLineEdit, QTimeEdit, QPushButton, QCheckBox, QScrollArea,
-    QVBoxLayout, QHBoxLayout, QFrame
+    QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
+
 from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QTime
 from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath, QIcon
 
@@ -226,57 +227,63 @@ class TodoPanel(QWidget):
         self.time_edit = QTimeEdit()
         self.time_edit.setTime(QTime.currentTime().addSecs(3600))
         self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.time_edit.setStyleSheet("""
             QTimeEdit {
                 background: #ffffff;
                 border: 1px solid #c7b8ea;
                 border-radius: 5px;
-                padding: 1px 40px 1px 5px;
+                padding: 2px 6px;
                 color: #4a3a6a;
                 font-size: 11px;
             }
-            QTimeEdit::up-button {
-                subcontrol-origin: border;
-                subcontrol-position: center right;
-                right: 22px;
-                width: 14px;
-                height: 15px;
-                background: #9c27b0;
-                border-radius: 3px;
-            }
-            QTimeEdit::up-button:hover {
-                background: #ab47bc;
-            }
-            QTimeEdit::up-button:pressed {
-                background: #7b1fa2;
-            }
-            QTimeEdit::up-arrow {
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><polygon points='5,2 8,7 2,7' fill='%23ffffff'/></svg>");
-                width: 8px;
-                height: 8px;
-            }
-            QTimeEdit::down-button {
-                subcontrol-origin: border;
-                subcontrol-position: center right;
-                right: 5px;
-                width: 14px;
-                height: 15px;
-                background: #9c27b0;
-                border-radius: 3px;
-            }
-            QTimeEdit::down-button:hover {
-                background: #ab47bc;
-            }
-            QTimeEdit::down-button:pressed {
-                background: #7b1fa2;
-            }
-            QTimeEdit::down-arrow {
-                image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><polygon points='2,3 8,3 5,8' fill='%23ffffff'/></svg>");
-                width: 8px;
-                height: 8px;
-            }
         """)
         time_row.addWidget(self.time_edit, 1)
+
+        btn_up = QPushButton("▲")
+        btn_up.setFixedSize(14, 18)
+        btn_up.setToolTip("加时间")
+        btn_up.setStyleSheet("""
+            QPushButton {
+                background-color: #b39ddb;
+                color: #ffffff;
+                border: none;
+                border-radius: 3px;
+                font-size: 7px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c7b8ea;
+            }
+            QPushButton:pressed {
+                background-color: #9575cd;
+            }
+        """)
+        btn_up.clicked.connect(self.time_edit.stepUp)
+        time_row.addWidget(btn_up)
+
+        btn_down = QPushButton("▼")
+        btn_down.setFixedSize(14, 18)
+        btn_down.setToolTip("减时间")
+        btn_down.setStyleSheet("""
+            QPushButton {
+                background-color: #b39ddb;
+                color: #ffffff;
+                border: none;
+                border-radius: 3px;
+                font-size: 7px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c7b8ea;
+            }
+            QPushButton:pressed {
+                background-color: #9575cd;
+            }
+        """)
+        btn_down.clicked.connect(self.time_edit.stepDown)
+        time_row.addWidget(btn_down)
+
 
 
 
