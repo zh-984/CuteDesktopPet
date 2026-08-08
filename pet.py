@@ -982,10 +982,11 @@ class DesktopPet(QWidget):
                           'playful_sleep', 'playful_wave', 'playful_bounce'):
             return
 
-        if self.satiety <= 0:
+        if self.satiety <= 0 and not self.working:
             if self.state != 'hungry':
                 self.start_hungry()
             return
+
 
         # Check late night mode (>= 23:00 or < 05:00)
         from datetime import datetime
@@ -1172,7 +1173,9 @@ class DesktopPet(QWidget):
         self.eat_timer = 0
         self.update_image()
 
-    def start_hungry(self):
+    def start_hungry(self, force=False):
+        if self.working and not force:
+            return
         self.state = 'hungry'
         self.working = False
         self.vx = 0.0
@@ -1180,6 +1183,7 @@ class DesktopPet(QWidget):
         self.frame_index = 0
         self.update_image()
         self.show_speech('我饿了，快喂我吃东西...', 3000)
+
 
     def update_panel_position(self):
         px = int(self.pos_f[0])
@@ -1277,6 +1281,8 @@ class DesktopPet(QWidget):
 
     def start_work(self):
         self.working = True
+        if self.state == 'hungry':
+            self.start_idle()
         now = time.time()
         self.work_start_time = now
         self.last_candy = now
@@ -1290,6 +1296,7 @@ class DesktopPet(QWidget):
         self.save_data()
         self.refresh_panel()
 
+
     def end_work(self):
         if self.working:
             elapsed = self.get_work_elapsed()
@@ -1302,9 +1309,10 @@ class DesktopPet(QWidget):
             else:
                 self.show_speech(f'下班啦！本次工作{m}分钟~', 3000)
             if self.satiety <= 0:
-                self.start_hungry()
+                self.start_hungry(force=True)
             self.save_data()
             self.refresh_panel()
+
 
 
 

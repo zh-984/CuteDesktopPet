@@ -1,10 +1,10 @@
 {
-  "satiety": 36.28,
+  "satiety": 0.0,
   "candy_count": 3,
   "burger_count": 0,
   "cake_count": 0,
   "todo_list": [],
   "working": false,
   "work_start_time": 0,
-  "last_save_time": 1786093135.6769454
+  "last_save_time": 1786177062.6768777
 }
