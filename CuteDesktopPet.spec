@@ -1,7 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import re
+import sys
 from PIL import Image
+from PyQt6 import __path__ as pyqt_paths
 
 root = Path(SPECPATH)
 runtime_frames = Path(workpath) / 'runtime_frames'
@@ -27,6 +30,15 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+if sys.platform == 'win32':
+    # Qt wheels without ICU DLLs use Windows' ICU. PyInstaller can pick up
+    # unrelated ICU DLLs from PATH, whose versioned exports break Qt startup.
+    qt_bins = [(Path(path) / 'Qt6' / 'bin').resolve() for path in pyqt_paths]
+    a.binaries = [entry for entry in a.binaries
+                  if not re.fullmatch(r'icu(?:uc|in|dt)\d*\.dll', Path(entry[0]).name, re.I)
+                  or any(Path(entry[1]).resolve().parent == directory for directory in qt_bins)]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

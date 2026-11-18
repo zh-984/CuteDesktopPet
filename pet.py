@@ -2040,6 +2040,13 @@ def create_desktop_shortcut():
 
 
 def main():
+    if sys.argv[1:] == ['--smoke-test']:
+        app = QApplication(sys.argv[:1])
+        window = QWidget()
+        window.winId()  # Load the Windows Qt platform plugin and create a native window.
+        pixmap = QPixmap(resource_path('assets/processed/idle_0.png'))
+        sys.exit(1 if pixmap.isNull() else 0)
+
     logging.info('Application starting')
 
     app = QApplication(sys.argv)

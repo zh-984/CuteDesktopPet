@@ -152,6 +152,12 @@ python -m PyInstaller CuteDesktopPet.spec --noconfirm
 
 安装目录只包含运行所需的贴图和图标。打包时将贴图缩至最多 800 像素，原始素材仍保存在仓库中。
 
+发布前可以在 Windows PowerShell 中验证打包产物能加载 Qt 界面和贴图。命令退出码为 `0` 时验证通过。
+
+```powershell
+(Start-Process -FilePath .\dist\CuteDesktopPet\CuteDesktopPet.exe -ArgumentList '--smoke-test' -Wait -PassThru).ExitCode
+```
+
 ## 存档与验证
 
 新版存档位于 Windows 用户数据目录 `%LOCALAPPDATA%\CuteDesktopPet\pet_data.json`。保存通过同目录临时文件原子替换，并保留上一份有效文件 `pet_data.json.bak`。主存档损坏时依次尝试备份和程序旁的旧版存档；旧文件保留不变。位置、大小、亲密度、每日零食领取日期、安静模式和工作奖励进度都会保存。
