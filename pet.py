@@ -3,14 +3,19 @@ import os
 import random
 import logging
 import time
-import json
+import math
+import uuid
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from focus_windows import foreground_window, window_monitor, window_pid
+from pet_core import REWARD_INTERVALS, behavior_weights, read_save, write_save
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon,
-    QLineEdit, QTimeEdit, QPushButton, QCheckBox, QScrollArea,
+    QLineEdit, QDateTimeEdit, QPushButton, QCheckBox, QScrollArea,
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QTime
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QDateTime, QStandardPaths
 from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath, QIcon
 
 
@@ -22,11 +27,15 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-SAVE_DATA_PATH = os.path.join(get_app_dir(), 'pet_data.json')
+LEGACY_DATA_PATH = os.path.join(get_app_dir(), 'pet_data.json')
+SAVE_DATA_PATH = os.path.join(QStandardPaths.writableLocation(
+    QStandardPaths.StandardLocation.GenericDataLocation), 'CuteDesktopPet', 'pet_data.json')
 log_path = os.path.join(os.environ.get('TEMP', os.getcwd()), 'CuteDesktopPet.log')
 
 
-logging.basicConfig(filename=log_path, level=logging.INFO, encoding='utf-8',
+logging.basicConfig(handlers=[RotatingFileHandler(log_path, maxBytes=256 * 1024,
+                                                backupCount=1, encoding='utf-8', delay=True)],
+                    level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s')
 
 IDLE_SPEECHES = [
@@ -48,14 +57,11 @@ IDLE_SPEECHES = [
     "深呼吸，放松一下心情",
 ]
 STARTUP_SPEECHES = [
-    "准备好今天的工作了吗？",
-    "坐正坐好，别驼背啦",
-    "开始工作！！！",
+    "我来陪你啦～单击一起玩，双击摸摸头！",
 ]
 
 SATIETY_MAX = 100
-SATIETY_DECAY_PER_HOUR = 10
-FEED_AMOUNT = 30
+SATIETY_DECAY_PER_HOUR = 4
 CANDY_AMOUNT = 2
 BURGER_AMOUNT = 20
 CAKE_AMOUNT = 50
@@ -79,6 +85,9 @@ class SpeechBubble(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
         self.label = QLabel(self)
+        self.label.setTextFormat(Qt.TextFormat.PlainText)
+        self.label.setWordWrap(True)
+        self.label.setMaximumWidth(320)
         self.label.setStyleSheet(
             "QLabel {"
             "  background-color: rgba(255, 255, 255, 240);"
@@ -92,6 +101,9 @@ class SpeechBubble(QWidget):
         )
         self.label.adjustSize()
         self.setFixedSize(self.label.size())
+        self.hide_timer = QTimer(self)
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.hide)
         self.hide()
 
     def show_text(self, text, center_x, top_y, duration=3000):
@@ -101,10 +113,17 @@ class SpeechBubble(QWidget):
         h = self.label.height()
         self.setFixedSize(w, h)
         self.label.setGeometry(0, 0, w, h)
-        self.move(center_x - w // 2, top_y - h - 5)
+        screen = QApplication.screenAt(QPoint(center_x, top_y)) or QApplication.primaryScreen()
+        bounds = screen.availableGeometry()
+        x = max(bounds.left(), min(center_x - w // 2, bounds.right() - w + 1))
+        y = top_y - h - 5
+        if y < bounds.top():
+            y = top_y + 35
+        y = max(bounds.top(), min(y, bounds.bottom() - h + 1))
+        self.move(x, y)
         self.show()
         self.raise_()
-        QTimer.singleShot(duration, self.hide)
+        self.hide_timer.start(duration)
 
 
 class TodoItemWidget(QWidget):
@@ -129,10 +148,13 @@ class TodoItemWidget(QWidget):
         text_layout.setSpacing(2)
 
         self.text_label = QLabel(item_data.get('text', ''))
+        self.text_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.text_label.setWordWrap(True)
         self.text_label.setStyleSheet("color: #4a3a6a; font-size: 11px; font-weight: bold;")
         text_layout.addWidget(self.text_label)
 
-        target_time = item_data.get('target_time', '')
+        due_at = item_data.get('due_at', 0)
+        target_time = datetime.fromtimestamp(due_at).strftime('%m-%d %H:%M') if due_at else ''
         if target_time:
             time_label = QLabel(f"⏰ 截止 {target_time}")
             time_label.setStyleSheet("color: #8870b0; font-size: 9px;")
@@ -176,8 +198,8 @@ class TodoItemWidget(QWidget):
 
 class TodoPanel(QWidget):
     """Floating scrollable todo list panel."""
-    PANEL_W = 230
-    PANEL_H = 240
+    PANEL_W = 300
+    PANEL_H = 280
 
     def __init__(self, pet):
         super().__init__()
@@ -225,12 +247,13 @@ class TodoPanel(QWidget):
         time_label.setStyleSheet("color: #6a5a8a; font-size: 11px;")
         time_row.addWidget(time_label)
 
-        self.time_edit = QTimeEdit()
-        self.time_edit.setTime(QTime.currentTime().addSecs(3600))
-        self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit = QDateTimeEdit()
+        self.time_edit.setDateTime(QDateTime.currentDateTime().addSecs(3600))
+        self.time_edit.setDisplayFormat("MM-dd HH:mm")
+        self.time_edit.setCalendarPopup(True)
         self.time_edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.time_edit.setStyleSheet("""
-            QTimeEdit {
+            QDateTimeEdit {
                 background: #ffffff;
                 border: 1px solid #c7b8ea;
                 border-radius: 5px;
@@ -395,16 +418,18 @@ class TodoPanel(QWidget):
         text = self.input_edit.text().strip()
         if not text:
             return
-        target_time = self.time_edit.time().toString("HH:mm")
+        deadline = self.time_edit.dateTime().toSecsSinceEpoch()
+        deadline = deadline - deadline % 60 + 59
         item_data = {
-            'id': time.time(),
+            'id': uuid.uuid4().hex,
             'text': text,
-            'target_time': target_time,
-            'completed': False
+            'due_at': deadline,
+            'completed': False,
+            'reward_claimed': False,
         }
         self.pet.todo_list.append(item_data)
         self.input_edit.clear()
-        self.time_edit.setTime(QTime.currentTime().addSecs(3600))
+        self.time_edit.setDateTime(QDateTime.currentDateTime().addSecs(3600))
         self.refresh_items()
         self.pet.save_data()
         self.pet.refresh_panel()
@@ -412,9 +437,8 @@ class TodoPanel(QWidget):
     def on_item_completed(self, item_data, is_completed):
         item_data['completed'] = is_completed
         if is_completed:
-            now_str = time.strftime("%H:%M")
-            target_time = item_data.get('target_time', '')
-            if target_time and now_str <= target_time:
+            if not item_data.get('reward_claimed', False) and time.time() <= item_data.get('due_at', 0):
+                item_data['reward_claimed'] = True
                 self.pet.candy_count += 1
                 self.pet.show_speech("准时完成待办！🍬 获得1颗糖果！", 3000)
             else:
@@ -434,7 +458,7 @@ class StatusPanel(QWidget):
     """Status panel that shows food counts, satiety, work duration, todo count, and allows feeding."""
 
     PANEL_W = 180
-    PANEL_H = 175
+    PANEL_H = 200
 
     def __init__(self, pet):
         super().__init__()
@@ -609,6 +633,10 @@ class StatusPanel(QWidget):
             work_text = '💼 未工作'
         p.drawText(pad, y + 10, work_text)
 
+        p.setPen(QColor(150, 100, 155))
+        p.drawText(pad, y + 30, f'♥ 亲密度 {int(self.pet.affection)} · '
+                   + ('安静陪伴' if self.pet.quiet_mode else '自在玩耍'))
+
         p.end()
 
 
@@ -625,6 +653,7 @@ class DesktopPet(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setMouseTracking(True)
 
         self.pet_size = QSize(200, 200)
         self.setFixedSize(self.pet_size)
@@ -632,9 +661,9 @@ class DesktopPet(QWidget):
         self.compute_screen_bounds()
 
         primary = QApplication.primaryScreen().availableGeometry()
-        # Start clearly visible near top-left of primary screen to avoid scaling issues
-        start_x = primary.left() + 100
-        start_y = primary.top() + 100
+        # A new companion sits near the taskbar; returning pets remember their spot.
+        start_x = max(primary.left(), primary.right() - self.pet_size.width() - 48)
+        start_y = max(primary.top(), primary.bottom() - self.pet_size.height() + 1)
         self.move(start_x, start_y)
         self.saved_start = QPoint(start_x, start_y)
 
@@ -644,6 +673,7 @@ class DesktopPet(QWidget):
         self.label.setAutoFillBackground(False)
         self.label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.label.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self.todo_list = []
         self.bubble = SpeechBubble()
@@ -651,7 +681,6 @@ class DesktopPet(QWidget):
         self.panel_visible = False
         self.todo_panel = TodoPanel(self)
         self.todo_panel_visible = False
-        self.sleep_pixmap = None
         self.load_frames()
 
         self.state = 'idle'
@@ -659,7 +688,16 @@ class DesktopPet(QWidget):
         self.facing_right = True
         self.drag_offset = None
         self.last_drag_pos = None
-        self.drag_total_dx = 0
+        self.press_pos = None
+        self._double_click = False
+        self.last_pet_time = -100.0
+        self.heart_until = 0.0
+        self.recent_behavior = None
+        self.affection = 0.0
+        self.quiet_mode = False
+        self.last_snack_date = ''
+        self.saved_position = None
+        self._render_key = None
         self.ground_y = start_y
 
         self.pos_f = [float(start_x), float(start_y)]
@@ -669,6 +707,16 @@ class DesktopPet(QWidget):
         self.jump_strength = -14.0
         self.gravity = 0.8
         self.target_x = None
+        self.walk_target = None
+        self.walk_speed = 0.0
+        self.chase_until = 0.0
+        self.focus_target = None
+        self.focus_screen = None
+        self.focus_bind_at = None
+        self.focus_away_at = None
+        self.focus_warned = False
+        self.focus_knock_at = None
+        self.last_checkpoint = time.monotonic()
         self.dance_timer = 0
         self.playful_eat_timer = 0
         self.eat_timer = 0
@@ -676,7 +724,6 @@ class DesktopPet(QWidget):
         self.playful_wave_timer = 0
         self.playful_bounce_timer = 0
         self.playful_bounce_base_y = 0
-        self.last_stretch_time = 0
         self.last_night_speech_time = 0
         self.stretch_step = 0
 
@@ -686,23 +733,33 @@ class DesktopPet(QWidget):
         self.candy_count = 0
         self.burger_count = 0
         self.cake_count = 0
-        self.load_data()
-
         self.working = False
         self.work_start_time = 0
-        self.last_satiety_check = time.time()
-        self.last_candy = 0
-        self.last_burger = 0
-        self.last_cake = 0
-        self.last_work_duration_speech = 0
+        self.work_session_seconds = 0.0
+        self.work_total_seconds = 0.0
+        self.work_last_tick = time.monotonic()
+        self.reward_marks = dict.fromkeys(REWARD_INTERVALS, 0)
+        self.next_stretch_seconds = 45 * 60
+        self.last_satiety_check = time.monotonic()
+        self.load_data()
+        if self.saved_position:
+            point = self.clamp_position(QPoint(*map(int, self.saved_position)))
+            self.move(point)
+            self.pos_f = [float(point.x()), float(point.y())]
+            self.ground_y = point.y()
 
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.next_frame)
-        self.anim_timer.start(130)
+        self.anim_last_tick = time.monotonic()
 
         self.physics_timer = QTimer(self)
+        self.physics_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.physics_timer.timeout.connect(self.update_physics)
-        self.physics_timer.start(16)
+        self.physics_last_tick = time.monotonic()
+
+        self.stretch_timer = QTimer(self)
+        self.stretch_timer.setSingleShot(True)
+        self.stretch_timer.timeout.connect(self.advance_stretch)
 
         self.behavior_timer = QTimer(self)
         self.behavior_timer.timeout.connect(self.decide_behavior)
@@ -714,18 +771,35 @@ class DesktopPet(QWidget):
 
         self.panel_refresh_timer = QTimer(self)
         self.panel_refresh_timer.timeout.connect(self.refresh_panel)
-        self.panel_refresh_timer.start(1000)
+        self.click_timer = QTimer(self)
+        self.click_timer.setSingleShot(True)
+        self.click_timer.timeout.connect(self.play_with_pet)
+        self.speech_timer = QTimer(self)
+        self.speech_timer.setSingleShot(True)
+        self.speech_timer.timeout.connect(self.random_speech)
+        self.startup_timer = QTimer(self)
+        self.startup_timer.setSingleShot(True)
+        self.startup_timer.timeout.connect(
+            lambda: self.show_speech(STARTUP_SPEECHES[0], 4500, ambient=True))
+        self.focus_timer = QTimer(self)
+        self.focus_timer.setInterval(300)
+        self.focus_timer.timeout.connect(self.check_focus)
+
+        app = QApplication.instance()
+        app.screenAdded.connect(self.on_screens_changed)
+        app.screenRemoved.connect(self.on_screens_changed)
+        self.on_screens_changed()
 
         self.schedule_next_speech()
         self.update_image()
 
         # startup speeches
-        QTimer.singleShot(500, lambda: self.show_speech(STARTUP_SPEECHES[0], 2500))
-        QTimer.singleShot(3200, lambda: self.show_speech(STARTUP_SPEECHES[1], 2500))
-        QTimer.singleShot(6000, lambda: self.show_speech(STARTUP_SPEECHES[2], 2500))
+        self.startup_timer.start(500)
 
     def save_data(self):
+        self.settle_work()
         data = {
+            'version': 2,
             'satiety': round(self.satiety, 2),
             'candy_count': self.candy_count,
             'burger_count': self.burger_count,
@@ -733,38 +807,39 @@ class DesktopPet(QWidget):
             'todo_list': self.todo_list,
             'working': self.working,
             'work_start_time': self.work_start_time,
+            'work_session_seconds': self.work_session_seconds,
+            'work_total_seconds': self.work_total_seconds,
+            'reward_marks': self.reward_marks,
+            'affection': self.affection,
+            'quiet_mode': self.quiet_mode,
+            'last_snack_date': self.last_snack_date,
+            'pet_size': self.pet_size.width(),
+            'position': [self.x(), self.y()],
             'last_save_time': time.time(),
         }
         try:
-            with open(SAVE_DATA_PATH, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            write_save(SAVE_DATA_PATH, data)
+            self.last_checkpoint = time.monotonic()
         except Exception as e:
             logging.error(f'Failed to save pet data: {e}')
 
     def load_data(self):
-        if not os.path.exists(SAVE_DATA_PATH):
-            return
-        try:
-            with open(SAVE_DATA_PATH, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                loaded_satiety = float(data.get('satiety', SATIETY_MAX))
-                self.candy_count = int(data.get('candy_count', 0))
-                self.burger_count = int(data.get('burger_count', 0))
-                self.cake_count = int(data.get('cake_count', 0))
-                self.todo_list = data.get('todo_list', [])
-                self.todo_panel.refresh_items()
-                self.working = bool(data.get('working', False))
-                self.work_start_time = float(data.get('work_start_time', 0))
-                last_save = float(data.get('last_save_time', time.time()))
-                now = time.time()
-                offline_elapsed = max(0.0, now - last_save)
-                # Calculate offline decay (0.5 points per 180 seconds)
-                offline_decay = offline_elapsed * (0.5 / 180.0)
-                self.satiety = max(0.0, min(float(SATIETY_MAX), loaded_satiety - offline_decay))
-                logging.info(f'Loaded pet data: {data}, offline decay: {offline_decay:.2f}, current satiety: {self.satiety:.2f}')
-
-        except Exception as e:
-            logging.error(f'Failed to load pet data: {e}')
+        data, errors = read_save(SAVE_DATA_PATH, LEGACY_DATA_PATH, time.time())
+        for error in errors:
+            logging.warning('Save recovery: %s', error)
+        for key in ('satiety', 'candy_count', 'burger_count', 'cake_count', 'todo_list',
+                    'affection', 'quiet_mode', 'last_snack_date', 'working', 'work_session_seconds',
+                    'work_total_seconds', 'reward_marks'):
+            setattr(self, key, data[key])
+        self.next_stretch_seconds = (int(self.work_session_seconds // 2700) + 1) * 2700
+        self.work_start_time = time.time() if self.working else 0
+        self.saved_position = data['position']
+        if data['pet_size'] != self.pet_size.width():
+            self.pet_size = QSize(data['pet_size'], data['pet_size'])
+            self.setFixedSize(self.pet_size)
+            self.label.setFixedSize(self.pet_size)
+            self.load_frames()
+        self.todo_panel.refresh_items()
 
 
     def force_show(self):
@@ -772,13 +847,12 @@ class DesktopPet(QWidget):
         self.show()
         self.showNormal()
         self.raise_()
-        self.activateWindow()
-        primary = QApplication.primaryScreen().availableGeometry()
-        if not primary.intersects(self.geometry()):
-            logging.warning('Window off-screen; resetting')
-            self.move(self.saved_start)
-            self.pos_f = [float(self.saved_start.x()), float(self.saved_start.y())]
-            self.ground_y = self.saved_start.y()
+        if not self.focus_timer.isActive():
+            self.activateWindow()
+        point = self.clamp_position(self.pos())
+        self.move(point)
+        self.pos_f = [float(point.x()), float(point.y())]
+        self.ground_y = point.y()
         logging.info(f'Window geometry: {self.geometry()}')
 
     def compute_screen_bounds(self):
@@ -790,7 +864,49 @@ class DesktopPet(QWidget):
         self.screen_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
         logging.info(f'Virtual screen rect: {self.screen_rect}')
 
+    def current_bounds(self):
+        center = self.geometry().center()
+        screen = QApplication.screenAt(center)
+        if screen is None:
+            screen = min(QApplication.screens(), key=lambda s:
+                         (s.availableGeometry().center() - center).manhattanLength())
+        return screen.availableGeometry()
+
+    def clamp_position(self, point, size=None):
+        size = size or self.pet_size
+        center = point + QPoint(size.width() // 2, size.height() // 2)
+        screen = QApplication.screenAt(center)
+        if screen is None:
+            screen = min(QApplication.screens(), key=lambda s:
+                         (s.availableGeometry().center() - center).manhattanLength())
+        return self.clamp_to_bounds(point, screen.availableGeometry(), size)
+
+    @staticmethod
+    def clamp_to_bounds(point, bounds, size):
+        return QPoint(max(bounds.left(), min(point.x(), bounds.right() - size.width() + 1)),
+                      max(bounds.top(), min(point.y(), bounds.bottom() - size.height() + 1)))
+
+    def on_screens_changed(self, *_):
+        self.compute_screen_bounds()
+        for screen in QApplication.screens():
+            if screen not in getattr(self, '_watched_screens', []):
+                screen.availableGeometryChanged.connect(self.on_screens_changed)
+        self._watched_screens = QApplication.screens()
+        point = self.clamp_position(self.pos())
+        self.move(point)
+        self.pos_f = [float(point.x()), float(point.y())]
+        self.ground_y = point.y()
+        if self.focus_target:
+            self.sleep_in_corner()
+        elif self.state in ('walk', 'chase'):
+            self.start_idle()
+        if self.state in ('run', 'jump', 'fall'):
+            self.start_idle()
+        self.update_panel_position()
+
     def load_frames(self):
+        self._render_key = None
+        self.frame_cache = {}
         sleep_path = resource_path('assets/processed/sleep.png')
         if not os.path.exists(sleep_path):
             sleep_path = resource_path('assets/sleep.png')
@@ -823,38 +939,55 @@ class DesktopPet(QWidget):
         for state, paths in self.raw_frames.items():
             self.pixmaps[state] = []
             for p in paths:
-                if os.path.exists(p):
-                    pm = QPixmap(p).scaled(
+                source = QPixmap(p)
+                if not source.isNull():
+                    pm = source.scaled(
                         self.pet_size, Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation
                     )
                     self.pixmaps[state].append(pm)
                 else:
                     logging.warning(f'missing asset: {p}')
+        # A missing optional animation must never cause division by zero.
+        if not self.pixmaps['idle']:
+            fallback = QPixmap(self.pet_size)
+            fallback.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(fallback)
+            painter.setPen(QColor('#b39ddb'))
+            painter.setFont(QFont('Segoe UI Emoji', 48))
+            painter.drawText(fallback.rect(), Qt.AlignmentFlag.AlignCenter, '♥')
+            painter.end()
+            self.pixmaps['idle'] = [fallback]
+        for key, frames in self.pixmaps.items():
+            if not frames:
+                self.pixmaps[key] = self.pixmaps['idle']
 
     def current_pixmap(self):
-        # During drag, cycle run frames like normal running.
+        # Being picked up is distinct from running around on her own.
         # Playful/hungry/eat states reuse idle animation with overlays.
         if self.state == 'drag':
-            img_state = 'run'
-        elif self.state == 'playful_sleep':
+            img_state = 'idle'
+        elif self.state in ('playful_sleep', 'sleeping', 'focus_sleep'):
             img_state = 'sleep' if 'sleep' in self.pixmaps and self.pixmaps['sleep'] else 'idle'
         elif self.state == 'pajamas':
             img_state = 'pajamas' if 'pajamas' in self.pixmaps and self.pixmaps['pajamas'] else 'idle'
         elif self.state == 'stretch':
-            from datetime import datetime
             ch = datetime.now().hour
             is_night = (ch >= 23 or ch < 5)
             s_key = 'stretch_night' if is_night else 'stretch_day'
             img_state = s_key if s_key in self.pixmaps and self.pixmaps[s_key] else 'idle'
         elif self.state == 'hungry':
             img_state = 'sleep' if 'sleep' in self.pixmaps and self.pixmaps['sleep'] else 'idle'
-        elif self.state in ('playful_look', 'playful_eat', 'eat', 'playful_wave'):
+        elif self.state in ('playful_look', 'playful_eat', 'eat', 'playful_wave', 'petted'):
             img_state = 'idle'
-        elif self.state == 'playful_bounce':
+        elif self.state in ('walk', 'chase'):
+            img_state = 'run'
+        elif self.state in ('playful_bounce', 'focus_knock'):
             img_state = 'jump'
         else:
             img_state = self.state
+        if img_state == 'idle' and (datetime.now().hour >= 23 or datetime.now().hour < 5):
+            img_state = 'pajamas'
         pms = self.pixmaps.get(img_state, self.pixmaps['idle'])
         if not pms:
             pms = self.pixmaps['idle']
@@ -863,18 +996,27 @@ class DesktopPet(QWidget):
             idx = min(self.stretch_step, len(pms) - 1)
         else:
             idx = self.frame_index % len(pms)
+        flipped = self.facing_right ^ (self.state == 'dance' and self.dance_timer >= 1500)
+        overlay = self.state if self.state in ('eat', 'playful_eat', 'playful_wave', 'petted', 'focus_knock') else ''
+        heart_phase = min(4, int(max(0, self.heart_until - time.monotonic()) * 3)) if overlay == 'petted' else 0
+        knock_phase = self.frame_index % 4 if overlay == 'focus_knock' else 0
+        key = (img_state, idx, flipped, overlay, heart_phase, knock_phase)
+        if key in self.frame_cache:
+            return self.frame_cache[key]
+        if len(self.frame_cache) >= 32:
+            del self.frame_cache[next(iter(self.frame_cache))]
         pm = pms[idx]
+        if flipped:
+            pm = pm.transformed(QTransform().scale(-1, 1))
 
-        # Source assets face left; flip horizontally when we want to face right.
-        if self.facing_right:
-            pm = pm.transformed(QTransform().scale(-1, 1))
-        # During the second half of a dance, mirror again so she raises the other arm.
-        if self.state == 'dance' and self.dance_timer >= 1500:
-            pm = pm.transformed(QTransform().scale(-1, 1))
+        if not overlay:
+            self.frame_cache[key] = pm
+            return pm
 
         result = QPixmap(pm.size())
         result.fill(Qt.GlobalColor.transparent)
         painter = QPainter(result)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.drawPixmap(0, 0, pm)
 
         if self.state in ('playful_eat', 'eat'):
@@ -887,9 +1029,6 @@ class DesktopPet(QWidget):
             painter.drawEllipse(cx - 10, cy - 10, 20, 20)
             painter.setBrush(QColor(255, 220, 150))
             painter.drawEllipse(cx - 6, cy - 6, 12, 12)
-        elif self.state == 'playful_sleep':
-            pass
-
         elif self.state == 'playful_wave':
 
             # Waving hand overlay.
@@ -900,17 +1039,61 @@ class DesktopPet(QWidget):
             cy = result.height() // 2 - 25
             painter.drawEllipse(cx - 8, cy - 8, 16, 16)
 
+        elif self.state == 'petted':
+            painter.setPen(QColor(238, 119, 160, 80 + heart_phase * 35))
+            painter.setFont(QFont('Segoe UI Symbol', max(12, self.pet_size.width() // 9)))
+            painter.drawText(result.width() * 2 // 3, result.height() // 5 - (4 - heart_phase) * 3, '♥')
+            painter.setFont(QFont('Segoe UI Symbol', max(9, self.pet_size.width() // 14)))
+            painter.drawText(result.width() // 5, result.height() // 3 - (4 - heart_phase) * 2, '♥')
+
+        elif overlay == 'focus_knock':
+            painter.setPen(QColor(158, 95, 212, 240 - knock_phase * 45))
+            x = result.width() * (4 if self.facing_right else 1) // 5
+            y = result.height() // 3
+            radius = max(4, result.width() * (knock_phase + 2) // 45)
+            painter.drawEllipse(QPoint(x, y), radius, radius)
+            painter.drawEllipse(QPoint(x, y), radius + 5, radius + 5)
+
         painter.end()
+        self.frame_cache[key] = result
         return result
 
 
     def update_image(self):
-        self.label.setPixmap(self.current_pixmap())
+        self.sync_activity_timers()
+        pixmap = self.current_pixmap()
+        if pixmap.cacheKey() != self._render_key:
+            self.label.setPixmap(pixmap)
+            self._render_key = pixmap.cacheKey()
+
+    def sync_activity_timers(self):
+        if self.state != 'stretch':
+            self.stretch_timer.stop()
+        moving = self.state in ('run', 'walk', 'chase', 'jump', 'fall', 'playful_bounce')
+        animated = self.state in ('run', 'walk', 'chase', 'focus_knock', 'dance', 'playful_look', 'playful_eat',
+                                  'eat', 'playful_sleep', 'playful_wave', 'playful_bounce', 'petted')
+        for timer, active, interval, clock_attr in (
+                (self.physics_timer, moving, 16, 'physics_last_tick'),
+                (self.anim_timer, animated, 130, 'anim_last_tick')):
+            if active and not timer.isActive():
+                setattr(self, clock_attr, time.monotonic())
+                timer.start(interval)
+            elif not active:
+                timer.stop()
 
     def next_frame(self):
-        if self.state in ('run', 'drag'):
+        now = time.monotonic()
+        elapsed = min(250, max(0, (now - self.anim_last_tick) * 1000))
+        self.anim_last_tick = now
+        if self.state in ('run', 'walk', 'chase'):
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['run'])
+        elif self.state == 'focus_knock':
+            self.frame_index += 1
         elif self.state == 'dance':
+            self.dance_timer += elapsed
+            if self.dance_timer >= 3000:
+                self.start_idle()
+                return
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['dance'])
         elif self.state == 'playful_look':
             self.frame_index += 1
@@ -921,13 +1104,13 @@ class DesktopPet(QWidget):
                 return
         elif self.state == 'playful_eat':
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['idle'])
-            self.playful_eat_timer += 130
+            self.playful_eat_timer += elapsed
             if self.playful_eat_timer >= 4000:
                 self.start_idle()
                 return
         elif self.state == 'eat':
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['idle'])
-            self.eat_timer += 130
+            self.eat_timer += elapsed
             if self.eat_timer >= 3000:
                 self.start_idle()
                 return
@@ -935,31 +1118,35 @@ class DesktopPet(QWidget):
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['idle'])
         elif self.state == 'playful_sleep':
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['idle'])
-            self.playful_sleep_timer += 130
+            self.playful_sleep_timer += elapsed
             if self.playful_sleep_timer >= 5000:
                 self.start_idle()
                 return
         elif self.state == 'playful_wave':
-            self.frame_index = (self.frame_index + 1) % len(self.pixmaps['idle'])
-            # Wave by flipping direction every 4 frames (~0.5 s).
-            self.facing_right = (self.frame_index // 4) % 2 == 0
-            self.playful_wave_timer += 130
+            self.playful_wave_timer += elapsed
+            self.facing_right = int(self.playful_wave_timer // 520) % 2 == 0
             if self.playful_wave_timer >= 2600:
                 self.start_idle()
                 return
         elif self.state == 'playful_bounce':
             self.frame_index = (self.frame_index + 1) % len(self.pixmaps['jump'])
-            self.playful_bounce_timer += 130
+            self.playful_bounce_timer += elapsed
             if self.playful_bounce_timer >= 3000:
                 self.pos_f[1] = float(self.playful_bounce_base_y)
                 self.ground_y = self.playful_bounce_base_y
+                self.start_idle()
+                return
+        elif self.state == 'petted':
+            if now >= self.heart_until:
                 self.start_idle()
                 return
         else:
             self.frame_index = 0
         self.update_image()
 
-    def show_speech(self, text, duration=3000):
+    def show_speech(self, text, duration=3000, ambient=False):
+        if ambient and (self.quiet_mode or self.state == 'sleeping' or self.focus_timer.isActive()):
+            return
         cx = int(self.pos_f[0]) + self.pet_size.width() // 2
         ty = int(self.pos_f[1])
         self.bubble.show_text(text, cx, ty, duration)
@@ -967,19 +1154,21 @@ class DesktopPet(QWidget):
 
     def schedule_next_speech(self):
         interval = random.randint(120000, 300000)
-        QTimer.singleShot(interval, self.random_speech)
+        self.speech_timer.start(interval)
 
     def random_speech(self):
-        if self.state != 'drag' and self.state != 'hungry' and self.satiety > 0:
+        if self.state not in ('drag', 'hungry', 'sleeping', 'petted') and self.satiety > 0:
             text = random.choice(IDLE_SPEECHES)
-            self.show_speech(text, 3500)
+            self.show_speech(text, 3500, ambient=True)
         self.schedule_next_speech()
 
     def decide_behavior(self):
+        if self.press_pos is not None or self.click_timer.isActive() or self.focus_timer.isActive():
+            return
         # Don't interrupt active movement, stretching, or short animations.
-        if self.state in ('drag', 'jump', 'fall', 'run', 'stretch',
+        if self.state in ('drag', 'jump', 'fall', 'run', 'walk', 'chase', 'stretch',
                           'playful_look', 'playful_eat', 'eat',
-                          'playful_sleep', 'playful_wave', 'playful_bounce'):
+                          'playful_sleep', 'playful_wave', 'playful_bounce', 'petted', 'sleeping'):
             return
 
         if self.satiety <= 0 and not self.working:
@@ -989,46 +1178,98 @@ class DesktopPet(QWidget):
 
 
         # Check late night mode (>= 23:00 or < 05:00)
-        from datetime import datetime
         current_hour = datetime.now().hour
         if current_hour >= 23 or current_hour < 5:
             now = time.time()
             if now - self.last_night_speech_time >= 1800:
                 self.last_night_speech_time = now
-                self.show_speech('太晚啦，不许熬夜，快去睡觉吧~', 4000)
+                self.show_speech('夜深啦，我会轻轻地陪着你，记得早点休息～', 4000, ambient=True)
             self.state = 'pajamas'
             self.update_image()
             return
 
-        # Only change behavior sometimes, not every tick.
-        if random.random() > 0.35:
-            return
-
-        r = random.random()
-        if r < 0.18:
+        if self.state == 'pajamas':
             self.start_idle()
-        elif r < 0.30:
-            self.start_jump()
-        elif r < 0.42:
-            self.start_dance()
-        elif r < 0.54:
-            self.start_playful_look()
-        elif r < 0.66:
-            self.start_playful_eat()
-        elif r < 0.74:
-            self.start_playful_chase()
-        elif r < 0.82:
-            self.start_playful_sleep()
-        elif r < 0.91:
+        if self.quiet_mode or random.random() > 0.55:
+            return
+        weights = behavior_weights(self.satiety, self.affection, self.working, self.recent_behavior)
+        action = random.choices(list(weights), weights=list(weights.values()), k=1)[0]
+        self.recent_behavior = action
+        {'idle': self.start_idle, 'look': self.start_playful_look,
+         'wave': self.start_playful_wave, 'sleep': self.start_playful_sleep,
+         'dance': self.start_dance, 'bounce': self.start_playful_bounce,
+         'chase': self.start_playful_chase, 'wander': self.start_wander}[action]()
+
+    def play_with_pet(self):
+        if self.state == 'drag':
+            return
+        self.start_idle()
+        if self.satiety <= 0:
             self.start_playful_wave()
         else:
             self.start_playful_bounce()
+        self.show_speech('一起玩！接住我的开心～', 2400)
+
+    def pet_head(self):
+        now = time.monotonic()
+        if self.state == 'drag':
+            return
+        if self.state == 'playful_bounce':
+            self.pos_f[1] = float(self.playful_bounce_base_y)
+            self.move(int(self.pos_f[0]), int(self.pos_f[1]))
+        if now - self.last_pet_time >= 5:
+            self.affection = min(100, self.affection + 1)
+            self.last_pet_time = now
+        self.state = 'petted'
+        self.vx = self.vy = 0.0
+        self.ground_y = int(self.pos_f[1])
+        self.heart_until = now + 1.6
+        self.frame_index = 0
+        self.update_image()
+        lines = ['嘿嘿，好舒服～', '摸摸头，烦恼都飞走啦！', '有你在就很开心。']
+        if self.affection >= 20:
+            lines += ['最喜欢和你待在一起啦 ♥', '今天也有好好陪着你喔。']
+        self.show_speech(random.choice(lines), 2200)
+        self.save_data()
+        self.refresh_panel()
+
+    def toggle_quiet(self):
+        self.quiet_mode = not self.quiet_mode
+        if self.quiet_mode:
+            self.start_idle()
+            self.bubble.hide()
+        self.show_speech('我会安静地陪着你。' if self.quiet_mode else '可以一起玩啦～', 2200)
+        self.save_data()
+        self.refresh_panel()
+
+    def toggle_nap(self):
+        if self.state == 'sleeping':
+            self.start_idle()
+            self.show_speech('睡醒啦～又是元气满满的一天！', 2400)
+        else:
+            self.state = 'sleeping'
+            self.vx = self.vy = 0.0
+            self.update_image()
+            self.show_speech('我在这里眯一会儿，摸摸头就能叫醒我。', 3000)
+
+    def daily_snack(self):
+        today = datetime.now().date().isoformat()
+        if self.last_snack_date == today:
+            self.show_speech('今天的零食已经收好啦，明天还有喔。', 2400)
+            return
+        self.last_snack_date = today
+        self.burger_count += 2
+        self.candy_count += 3
+        self.show_speech('今日零食：汉堡×2、糖果×3！一起慢慢享用～', 3000)
+        self.save_data()
+        self.refresh_panel()
 
     def start_idle(self):
         self.state = 'idle'
         self.vx = 0.0
         self.vy = 0.0
         self.target_x = None
+        self.walk_target = None
         self.frame_index = 0
         self.update_image()
 
@@ -1039,8 +1280,9 @@ class DesktopPet(QWidget):
             return
         self.state = 'run'
         margin = self.pet_size.width() // 2
-        max_x = self.screen_rect.right() - self.pet_size.width()
-        lo = self.screen_rect.left() + margin
+        bounds = self.current_bounds()
+        max_x = bounds.right() - self.pet_size.width() + 1
+        lo = bounds.left() + margin
         hi = max(lo, max_x - margin)
         self.target_x = random.randint(lo, hi)
         dx = self.target_x - self.pos_f[0]
@@ -1056,8 +1298,9 @@ class DesktopPet(QWidget):
             return
         self.state = 'jump'
         self.vy = self.jump_strength
-        max_x = self.screen_rect.right() - self.pet_size.width()
-        lo = self.screen_rect.left()
+        bounds = self.current_bounds()
+        max_x = bounds.right() - self.pet_size.width() + 1
+        lo = bounds.left()
         hi = max(lo, max_x)
         self.target_x = random.randint(lo, hi)
         dx = self.target_x - self.pos_f[0]
@@ -1085,24 +1328,18 @@ class DesktopPet(QWidget):
         self.vy = 0.0
         self.show_speech('站起来活动一下脖子、喝口水吧~', 4500)
         self.update_image()
-        QTimer.singleShot(1000, self._stretch_step_2)
+        self.stretch_timer.start(1000)
 
 
-    def _stretch_step_2(self):
-        if self.state == 'stretch':
-            self.stretch_step = 1
-            self.update_image()
-            QTimer.singleShot(1000, self._stretch_step_3)
-
-    def _stretch_step_3(self):
-        if self.state == 'stretch':
-            self.stretch_step = 2
-            self.update_image()
-            QTimer.singleShot(2000, self._finish_stretch)
-
-    def _finish_stretch(self):
-        if self.state == 'stretch':
+    def advance_stretch(self):
+        if self.state != 'stretch':
+            return
+        if self.stretch_step >= 2:
             self.start_idle()
+            return
+        self.stretch_step += 1
+        self.update_image()
+        self.stretch_timer.start(2000 if self.stretch_step == 2 else 1000)
 
 
     def start_playful_look(self):
@@ -1121,21 +1358,65 @@ class DesktopPet(QWidget):
         self.update_image()
 
     def start_playful_chase(self):
-        """Run toward the current mouse cursor position."""
-        if self.satiety <= 0:
-            self.start_hungry()
+        """Follow the live cursor in both axes for a short burst."""
+        if self.focus_timer.isActive() or self.state == 'drag':
             return
-        self.state = 'run'
-        mouse = QCursor.pos()
-        max_x = self.screen_rect.right() - self.pet_size.width()
-        min_x = self.screen_rect.left()
-        target = mouse.x() - self.pet_size.width() // 2
-        self.target_x = max(min_x, min(target, max_x))
-        dx = self.target_x - self.pos_f[0]
-        self.facing_right = dx >= 0
-        self.vx = self.run_speed if self.facing_right else -self.run_speed
-        self.vy = 0.0
+        self.chase_until = time.monotonic() + 8
+        self.begin_walk(self.cursor_destination(), 'chase')
+
+    def cursor_destination(self):
+        return self.destination_at(QCursor.pos())
+
+    def destination_at(self, point, screen=None):
+        half = QPoint(self.width() // 2, self.height() // 2)
+        if screen is not None:
+            return self.clamp_to_bounds(point - half, screen.availableGeometry(), self.pet_size)
+        return self.clamp_position(point - half)
+
+    def start_wander(self):
+        bounds = self.current_bounds()
+        offset = QPoint(random.randint(-260, 260), random.randint(-140, 140))
+        self.begin_walk(self.clamp_to_bounds(self.pos() + offset, bounds, self.pet_size))
+
+    def begin_walk(self, target, state='walk'):
+        self.state = state
+        self.walk_target = target
+        self.walk_speed = 0.0
+        self.frame_index = 0
         self.update_image()
+
+    def update_walk(self, now, dt):
+        if self.state == 'chase':
+            if now >= self.chase_until:
+                self.start_idle()
+                return
+            self.walk_target = self.cursor_destination()
+        target = self.walk_target
+        dx, dy = target.x() - self.pos_f[0], target.y() - self.pos_f[1]
+        distance = math.hypot(dx, dy)
+        if distance <= 2:
+            self.pos_f = [float(target.x()), float(target.y())]
+            self.move(target)
+            self.ground_y = target.y()
+            self.update_panel_position()
+            if self.focus_target:
+                self.start_focus_knock(now)
+            else:
+                self.start_idle()
+            return
+        max_speed = 840 if self.focus_target else 640 if self.state == 'chase' else 155
+        desired_speed = min(max_speed, max(45, distance * 6))
+        self.walk_speed += (desired_speed - self.walk_speed) * min(1, dt * 12)
+        step = min(distance, self.walk_speed * dt)
+        self.pos_f[0] += step * dx / distance
+        self.pos_f[1] += step * dy / distance
+        if abs(dx) > 6 and self.facing_right != (dx > 0):
+            self.facing_right = dx > 0
+            self.update_image()
+        point = QPoint(round(self.pos_f[0]), round(self.pos_f[1]))
+        if point != self.pos():
+            self.move(point)
+            self.update_panel_position()
 
     def start_playful_sleep(self):
         self.state = 'playful_sleep'
@@ -1144,6 +1425,103 @@ class DesktopPet(QWidget):
         self.frame_index = 0
         self.playful_sleep_timer = 0
         self.update_image()
+
+    def toggle_focus(self):
+        if self.focus_timer.isActive():
+            self.stop_focus('专注结束，休息一下吧～')
+            return
+        if sys.platform != 'win32':
+            self.show_speech('专注模式目前支持 Windows。')
+            return
+        self.click_timer.stop()
+        self.start_idle()
+        self.focus_bind_at = time.monotonic() + 3
+        self.focus_timer.start()
+        self.show_speech('请在 3 秒内切到要专注的窗口。', 3000)
+
+    def stop_focus(self, message):
+        self.focus_timer.stop()
+        self.focus_target = self.focus_screen = None
+        self.focus_bind_at = self.focus_away_at = self.focus_knock_at = None
+        self.focus_warned = False
+        point = self.clamp_position(self.pos())
+        self.move(point)
+        self.pos_f = [float(point.x()), float(point.y())]
+        self.ground_y = point.y()
+        self.start_idle()
+        self.update_panel_position()
+        self.show_speech(message)
+
+    def sleep_in_corner(self):
+        screens = QApplication.screens()
+        if self.focus_screen not in screens:
+            self.focus_screen = QApplication.primaryScreen()
+        bounds = self.focus_screen.availableGeometry()
+        point = self.clamp_to_bounds(bounds.bottomRight() - QPoint(self.width() + 12, self.height() + 12),
+                                     bounds, self.pet_size)
+        self.move(point)
+        self.pos_f = [float(point.x()), float(point.y())]
+        self.ground_y = point.y()
+        self.state = 'focus_sleep'
+        self.frame_index = 0
+        self.bubble.hide()
+        self.update_image()
+        self.update_panel_position()
+
+    def start_focus_knock(self, now):
+        self.focus_knock_at = now
+        self.state = 'focus_knock'
+        self.frame_index = 0
+        self.update_image()
+        self.show_speech('咚咚！回来继续专注吧～', 2500)
+
+    @staticmethod
+    def screen_for_window(handle):
+        device = window_monitor(handle)
+        return next((screen for screen in QApplication.screens() if screen.name() == device), None)
+
+    def check_focus(self):
+        now = time.monotonic()
+        if self.focus_bind_at is not None and now < self.focus_bind_at:
+            return
+        foreground = foreground_window()
+        if self.focus_bind_at is not None:
+            self.focus_bind_at = None
+            if foreground is None or foreground[2]:
+                self.stop_focus('没有选中工作窗口，请重新开启专注。')
+                return
+            self.focus_target = foreground[:2]
+            self.focus_screen = (self.screen_for_window(foreground[0])
+                                 or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen())
+            self.sleep_in_corner()
+            return
+
+        handle, pid = self.focus_target
+        if window_pid(handle) != pid:
+            self.stop_focus('专注窗口已关闭。')
+            return
+        if foreground and foreground[:2] == self.focus_target:
+            self.focus_away_at = self.focus_knock_at = None
+            self.focus_warned = False
+            if self.state != 'focus_sleep':
+                self.sleep_in_corner()
+            return
+        if self.focus_warned:
+            if self.focus_knock_at is not None and now - self.focus_knock_at >= 2.5:
+                self.focus_knock_at = None
+                self.sleep_in_corner()
+            return
+        if foreground is None:
+            self.focus_away_at = None
+        elif self.focus_away_at is None:
+            self.focus_away_at = now
+        elif now - self.focus_away_at >= 2:
+            self.focus_warned = True
+            screen = self.screen_for_window(foreground[0])
+            pointer = QCursor.pos()
+            if screen and not screen.geometry().contains(pointer):
+                pointer = screen.availableGeometry().center()
+            self.begin_walk(self.destination_at(pointer, screen))
 
     def start_playful_wave(self):
         self.state = 'playful_wave'
@@ -1186,41 +1564,62 @@ class DesktopPet(QWidget):
 
 
     def update_panel_position(self):
-        px = int(self.pos_f[0])
-        py = int(self.pos_f[1])
-        screen_left = self.screen_rect.left()
-        screen_right = self.screen_rect.right()
-        screen_top = self.screen_rect.top()
-        screen_bottom = self.screen_rect.bottom()
+        if not self.panel_visible and not self.todo_panel_visible:
+            return
+        bounds = self.current_bounds()
+        px, py = self.x(), self.y()
+        occupied = [self.geometry()]
+        for panel, visible, prefer_left in ((self.status_panel, self.panel_visible, False),
+                                            (self.todo_panel, self.todo_panel_visible, True)):
+            if not visible:
+                continue
+            right = px + self.pet_size.width() + 10
+            left = px - panel.width() - 10
+            y = max(bounds.top(), min(py, bounds.bottom() - panel.height() + 1))
+            candidates = [(left, y), (right, y)] if prefer_left else [(right, y), (left, y)]
+            candidates += [(min(r.left() for r in occupied) - panel.width() - 10, y),
+                           (max(r.right() for r in occupied) + 11, y),
+                           (px, py - panel.height() - 10), (px, py + self.height() + 10)]
+            rects = [QRect(max(bounds.left(), min(x, bounds.right() - panel.width() + 1)),
+                           max(bounds.top(), min(top, bounds.bottom() - panel.height() + 1)),
+                           panel.width(), panel.height()) for x, top in candidates]
+            chosen = next((r for r in rects if all(not r.intersects(other) for other in occupied)), rects[0])
+            panel.move(chosen.topLeft())
+            occupied.append(chosen)
 
-        if self.panel_visible:
-            pw = self.status_panel.width()
-            ph = self.status_panel.height()
-            if px + self.pet_size.width() + 10 + pw <= screen_right:
-                ix = px + self.pet_size.width() + 10
-            else:
-                ix = px - pw - 10
-            iy = py
-            self.status_panel.move(ix, iy)
-            self.status_panel.raise_()
-
-        if self.todo_panel_visible:
-            tw = self.todo_panel.width()
-            th = self.todo_panel.height()
-            if px - tw - 10 >= screen_left:
-                tx = px - tw - 10
-            else:
-                tx = px + self.pet_size.width() + 10
-            ty = max(screen_top, min(py, screen_bottom - th))
-            self.todo_panel.move(tx, ty)
-            self.todo_panel.raise_()
+    def settle_work(self):
+        now = time.monotonic()
+        elapsed = max(0, now - self.work_last_tick)
+        self.work_last_tick = now
+        # A suspended computer is not an active work session.
+        if self.working and elapsed <= 60:
+            self.work_session_seconds += elapsed
+            self.work_total_seconds += elapsed
 
     def get_work_elapsed(self):
-        if not self.working or self.work_start_time <= 0:
-            return 0
-        return max(0.0, time.time() - self.work_start_time)
+        extra = max(0, time.monotonic() - self.work_last_tick) if self.working else 0
+        return self.work_session_seconds + (extra if extra <= 60 else 0)
+
+    def grant_work_rewards(self):
+        earned = []
+        for key, interval in REWARD_INTERVALS.items():
+            due = int(self.work_total_seconds // interval)
+            count = max(0, due - self.reward_marks[key])
+            if count:
+                setattr(self, key + '_count', getattr(self, key + '_count') + count)
+                self.reward_marks[key] = due
+                earned.append(f"{ {'candy': '糖果', 'burger': '汉堡', 'cake': '蛋糕'}[key]}×{count}")
+        if earned:
+            self.show_speech('陪伴工作奖励：' + '、'.join(earned), 3000, ambient=True)
+        return bool(earned)
 
     def refresh_panel(self):
+        self.setToolTip(f'葡萄冻冻 · 亲密度 {int(self.affection)}\n单击玩耍 · 双击摸头 · 按住拖动搬家 · 右键菜单')
+        if self.panel_visible and self.working:
+            if not self.panel_refresh_timer.isActive():
+                self.panel_refresh_timer.start(1000)
+        else:
+            self.panel_refresh_timer.stop()
         uncompleted_count = sum(1 for item in self.todo_list if not item.get('completed', False))
         elapsed = self.get_work_elapsed()
         self.status_panel.update_data(
@@ -1243,6 +1642,7 @@ class DesktopPet(QWidget):
             self.status_panel.raise_()
         else:
             self.status_panel.hide()
+            self.panel_refresh_timer.stop()
 
     def toggle_todo_panel(self):
         self.todo_panel_visible = not self.todo_panel_visible
@@ -1272,215 +1672,225 @@ class DesktopPet(QWidget):
             return
         setattr(self, count_attr, getattr(self, count_attr) - 1)
         self.satiety = min(SATIETY_MAX, self.satiety + amount)
-        if self.state == 'hungry':
-            self.start_idle()
-        self.start_eat()
+        if not self.focus_timer.isActive():
+            self.start_eat()
         self.show_speech(f'吃了一个{name}！+{amount}饱食度', 1800)
         self.save_data()
         self.refresh_panel()
 
     def start_work(self):
+        if self.working:
+            return
         self.working = True
-        if self.state == 'hungry':
+        self.work_start_time = time.time()
+        self.work_session_seconds = 0.0
+        self.work_last_tick = time.monotonic()
+        self.next_stretch_seconds = 45 * 60
+        if not self.focus_timer.isActive():
             self.start_idle()
-        now = time.time()
-        self.work_start_time = now
-        self.last_candy = now
-        self.last_burger = now
-        self.last_cake = now
-        self.last_work_duration_speech = now
-        if self.satiety <= 0:
-            self.show_speech('虽然肚子饿饿，但我也会陪你一起努力工作赚零食的！💪', 3000)
-        else:
-            self.show_speech('开始工作啦！', 2000)
+        self.show_speech('我会陪你一起努力，休息后零食进度也会保留喔。', 3000)
         self.save_data()
         self.refresh_panel()
 
 
     def end_work(self):
-        if self.working:
-            elapsed = self.get_work_elapsed()
-            self.working = False
-            self.work_start_time = 0
-            h = int(elapsed // 3600)
-            m = int((elapsed % 3600) // 60)
-            if h > 0:
-                self.show_speech(f'下班啦！本次工作{h}小时{m}分钟~', 3000)
-            else:
-                self.show_speech(f'下班啦！本次工作{m}分钟~', 3000)
-            if self.satiety <= 0:
-                self.start_hungry(force=True)
-            self.save_data()
-            self.refresh_panel()
-
-
-
-
-    def check_satiety(self):
-        now = time.time()
-        elapsed = now - self.last_satiety_check
-        if elapsed > 0:
-            # 180 seconds decay 0.5 points -> (0.5 / 180.0) points per second
-            decay = elapsed * (0.5 / 180.0)
-            self.satiety = max(0.0, self.satiety - decay)
-            self.last_satiety_check = now
-            if self.satiety <= 0 and self.state != 'hungry' and not self.working:
-                self.start_hungry()
-
-        if self.working:
-            work_elapsed = now - self.work_start_time
-            # Continuous 45-minute work stretch reminder
-            if work_elapsed >= 45 * 60 and (now - self.last_stretch_time >= 40 * 60):
-                self.last_stretch_time = now
-                self.start_stretch()
-
-            if now - self.last_candy >= 15 * 60:
-                self.candy_count += 1
-                self.last_candy += 15 * 60
-                self.show_speech('🍬 获得一颗糖果！可用来恢复饱食度', 2000)
-            if now - self.last_burger >= 2 * 60 * 60:
-                self.burger_count += 1
-                self.last_burger += 2 * 60 * 60
-                self.show_speech('🍔 获得一个汉堡！可用来恢复饱食度', 2500)
-            if now - self.last_cake >= 5 * 60 * 60:
-                self.cake_count += 1
-                self.last_cake += 5 * 60 * 60
-                self.show_speech('🎂 获得一个蛋糕！可用来恢复饱食度', 3000)
-
-            # Report work duration every 30 minutes
-            if now - self.last_work_duration_speech >= 30 * 60:
-                self.last_work_duration_speech = now
-                h = int(work_elapsed // 3600)
-                m = int((work_elapsed % 3600) // 60)
-                if h > 0:
-                    self.show_speech(f'已经工作{h}小时{m}分钟啦，加油！', 2500)
-                else:
-                    self.show_speech(f'已经工作{m}分钟啦，加油！', 2500)
-
+        if not self.working:
+            return
+        self.settle_work()
+        self.grant_work_rewards()
+        elapsed = self.work_session_seconds
+        self.working = False
+        self.work_start_time = 0
+        h, m = int(elapsed // 3600), int(elapsed % 3600 // 60)
+        self.show_speech(f'辛苦啦！陪你工作了{h}小时{m}分钟，休息一下吧～', 3000)
         self.save_data()
         self.refresh_panel()
 
 
 
+
+    def check_satiety(self):
+        now = time.monotonic()
+        elapsed = max(0, now - self.last_satiety_check)
+        self.last_satiety_check = now
+        rate = 2 if self.state in ('sleeping', 'playful_sleep', 'pajamas', 'focus_sleep') else SATIETY_DECAY_PER_HOUR
+        self.satiety = max(0, self.satiety - min(20, elapsed * rate / 3600))
+        self.settle_work()
+        earned = False
+        if self.working:
+            earned = self.grant_work_rewards()
+            if self.work_session_seconds >= self.next_stretch_seconds:
+                busy = self.state in ('drag', 'jump', 'run', 'fall', 'stretch', 'eat', 'petted')
+                if not busy:
+                    self.next_stretch_seconds = (int(self.work_session_seconds // 2700) + 1) * 2700
+                    if not self.quiet_mode and not self.focus_timer.isActive() and self.state != 'sleeping':
+                        self.start_stretch()
+        elif self.satiety <= 0 and not self.focus_timer.isActive() and self.state in ('idle', 'pajamas'):
+            self.start_hungry()
+        if earned or now - self.last_checkpoint >= 60:
+            self.save_data()
+        self.refresh_panel()
+
+
+
     def update_physics(self):
-        if self.state == 'drag':
+        now = time.monotonic()
+        dt = min(0.05, max(0, now - self.physics_last_tick))
+        self.physics_last_tick = now
+        if self.state in ('walk', 'chase'):
+            self.update_walk(now, dt)
             return
-
+        # Preserve existing motion tuning while accounting for delayed callbacks.
+        steps = dt / 0.016
         if self.state == 'playful_bounce':
-            # Small hops in place.
-            t = self.playful_bounce_timer / 1000.0
-            # Two small bounces per second.
-            hop = abs(int(15 * (1 - 2 * abs((t * 2) % 1 - 0.5))))
-            self.pos_f[1] = float(self.playful_bounce_base_y - hop)
-            self.move(int(self.pos_f[0]), int(self.pos_f[1]))
-            self.update_panel_position()
-            return
-
-        if self.state in ('jump', 'fall'):
-            self.vy += self.gravity
-            self.pos_f[1] += self.vy
-            self.pos_f[0] += self.vx
+            phase = self.playful_bounce_timer / 1000.0
+            hop = 15 * abs(math.sin(phase * math.pi * 2))
+            self.pos_f[1] = self.playful_bounce_base_y - hop
+        elif self.state in ('jump', 'fall'):
+            self.pos_f[1] += self.vy * steps + 0.5 * self.gravity * steps * steps
+            self.vy += self.gravity * steps
+            self.pos_f[0] += self.vx * steps
             if self.pos_f[1] >= self.ground_y:
                 self.pos_f[1] = float(self.ground_y)
-                self.vy = 0.0
-                self.vx = 0.0
+                self.move(int(self.pos_f[0]), int(self.pos_f[1]))
                 self.start_idle()
+                self.update_panel_position()
                 return
         elif self.state == 'run':
-            self.pos_f[0] += self.vx
-            if (self.vx > 0 and self.pos_f[0] >= self.target_x) or \
-               (self.vx < 0 and self.pos_f[0] <= self.target_x):
+            self.pos_f[0] += self.vx * steps
+            if (self.vx > 0 and self.pos_f[0] >= self.target_x) or (self.vx < 0 and self.pos_f[0] <= self.target_x):
                 self.pos_f[0] = float(self.target_x)
+                self.move(int(self.pos_f[0]), int(self.pos_f[1]))
                 self.start_idle()
+                self.update_panel_position()
                 return
-        elif self.state == 'dance':
-            self.dance_timer += 16
-            if self.dance_timer >= 3000:
-                self.start_idle()
-                return
-
-        min_x = self.screen_rect.left()
-        max_x = self.screen_rect.right() - self.pet_size.width()
-        if self.pos_f[0] < min_x:
-            self.pos_f[0] = float(min_x)
-            if self.state == 'run':
-                self.facing_right = True
-                self.vx = abs(self.vx)
-        elif self.pos_f[0] > max_x:
-            self.pos_f[0] = float(max_x)
-            if self.state == 'run':
-                self.facing_right = False
-                self.vx = -abs(self.vx)
-
-        self.move(int(self.pos_f[0]), int(self.pos_f[1]))
-        if self.state in ('run', 'jump'):
-            self.update_image()
+        else:
+            self.physics_timer.stop()
+            return
+        point = self.clamp_position(QPoint(int(self.pos_f[0]), int(self.pos_f[1])))
+        if point.x() != int(self.pos_f[0]):
+            self.vx = -self.vx
+            self.facing_right = self.vx >= 0
+        # Keep fractional coordinates unless a screen edge actually clamps them.
+        if point.x() != int(self.pos_f[0]):
+            self.pos_f[0] = float(point.x())
+        if point.y() != int(self.pos_f[1]):
+            self.pos_f[1] = float(point.y())
+        self.move(point)
         self.update_panel_position()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            self.last_drag_pos = event.globalPosition().toPoint()
-            self.drag_total_dx = 0
-            self.state = 'drag'
-            self.vx = 0.0
-            self.vy = 0.0
-            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
-            self.bubble.hide()
+            if self.focus_timer.isActive():
+                event.accept()
+                return
+            self.click_timer.stop()
+            # Stop autonomous motion before deciding between a click and a drag.
+            if self.state == 'playful_bounce':
+                self.pos_f[1] = float(self.playful_bounce_base_y)
+                self.move(int(self.pos_f[0]), int(self.pos_f[1]))
+            self.start_idle()
+            self.press_pos = event.globalPosition().toPoint()
+            self.last_drag_pos = self.press_pos
+            self.drag_offset = self.press_pos - self.pos()
+            self._double_click = False
+            event.accept()
         elif event.button() == Qt.MouseButton.RightButton:
+            self.click_timer.stop()
             self.show_context_menu(event.globalPosition().toPoint())
 
     def mouseMoveEvent(self, event):
-        if self.drag_offset is not None:
-            current_pos = event.globalPosition().toPoint()
-            dx = current_pos.x() - self.last_drag_pos.x()
-            if abs(dx) > 1:
-                self.facing_right = dx > 0
-            self.last_drag_pos = current_pos
-            self.drag_total_dx += dx
-
-            new_pos = current_pos - self.drag_offset
-            max_x = self.screen_rect.right() - self.pet_size.width()
-            max_y = self.screen_rect.bottom() - self.pet_size.height()
-            new_pos.setX(max(self.screen_rect.left(), min(new_pos.x(), max_x)))
-            new_pos.setY(max(self.screen_rect.top(), min(new_pos.y(), max_y)))
-            self.move(new_pos)
-            self.pos_f = [float(new_pos.x()), float(new_pos.y())]
-            self.ground_y = new_pos.y()
-            self.update_panel_position()
+        # Hover/synthetic moves after a lost release must never start a drag.
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            self.drag_offset = self.press_pos = self.last_drag_pos = None
+            self.unsetCursor()
+            if self.state == 'drag':
+                self.start_idle()
+            return
+        if self.drag_offset is None or self.press_pos is None:
+            return
+        current_pos = event.globalPosition().toPoint()
+        if self.state != 'drag':
+            delta = current_pos - self.press_pos
+            threshold = max(12, QApplication.startDragDistance())
+            if delta.x() ** 2 + delta.y() ** 2 < threshold ** 2:
+                return
+            self.state = 'drag'
+            self.vx = self.vy = 0.0
+            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+            self.bubble.hide()
+        dx = current_pos.x() - self.last_drag_pos.x()
+        if abs(dx) > 1:
+            self.facing_right = dx > 0
+        self.last_drag_pos = current_pos
+        point = self.clamp_position(current_pos - self.drag_offset)
+        self.move(point)
+        self.pos_f = [float(point.x()), float(point.y())]
+        self.ground_y = point.y()
+        self.update_image()
+        self.update_panel_position()
+        event.accept()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.drag_offset is not None:
-            self.drag_offset = None
-            self.last_drag_pos = None
-            self.drag_total_dx = 0
-            self.unsetCursor()
-            # Stop running animation when drag ends.
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        was_dragging = self.state == 'drag'
+        had_press = self.press_pos is not None
+        self.drag_offset = self.press_pos = self.last_drag_pos = None
+        self.unsetCursor()
+        if was_dragging:
             self.start_idle()
+            self.save_data()
+        elif had_press and not self._double_click:
+            self.click_timer.start(QApplication.doubleClickInterval())
+        self._double_click = False
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.focus_timer.isActive():
+                event.accept()
+                return
+            self.click_timer.stop()
+            self._double_click = True
+            self.drag_offset = self.press_pos = self.last_drag_pos = None
+            self.pet_head()
+            event.accept()
 
     def closeEvent(self, event):
-        logging.info('DesktopPet closing')
-        self.save_data()
-        self.anim_timer.stop()
-
-        self.physics_timer.stop()
-        self.behavior_timer.stop()
-        self.satiety_timer.stop()
-        self.panel_refresh_timer.stop()
-        self.bubble.close()
-        self.status_panel.close()
+        self.shutdown()
         event.accept()
         # Closing the pet window should always terminate the whole application.
         app = QApplication.instance()
         if app:
             app.quit()
 
-    def show_context_menu(self, pos):
+    def shutdown(self):
+        if getattr(self, '_shutting_down', False):
+            return
+        self._shutting_down = True
+        self.save_data()
+        for timer in self.findChildren(QTimer):
+            timer.stop()
+        self.bubble.hide_timer.stop()
+        self.bubble.close()
+        self.status_panel.close()
+        self.todo_panel.close()
+
+    def create_menu(self):
         menu = QMenu(self)
         work_text = '结束工作' if self.working else '开始工作'
         panel_text = '关闭状态栏' if self.panel_visible else '打开状态栏'
         todo_text = '关闭待办清单' if self.todo_panel_visible else '打开待办清单'
         actions = [
+            ('显示桌宠', self.force_show),
+            ('开启专注模式', self.toggle_focus),
+            ('追鼠标', self.start_playful_chase),
+            ('摸摸头 ♥', self.pet_head),
+            ('领取今日零食', self.daily_snack),
+            ('睡一会儿', self.toggle_nap),
+            ('安静陪伴', self.toggle_quiet),
+            (None, None),
             ('跳跃', self.start_jump),
             ('跳舞', self.start_dance),
             ('伸懒腰', self.start_stretch),
@@ -1496,10 +1906,34 @@ class DesktopPet(QWidget):
             if text is None:
                 menu.addSeparator()
             else:
-                a = QAction(text, self)
+                a = QAction(text, menu)
                 a.triggered.connect(callback)
                 menu.addAction(a)
+                if callback == self.toggle_focus:
+                    menu.aboutToShow.connect(lambda action=a: action.setText(
+                        '结束专注模式' if self.focus_timer.isActive() else '开启专注模式'))
+                if callback in (self.start_playful_chase, self.pet_head, self.toggle_nap,
+                                self.toggle_quiet, self.start_jump, self.start_dance, self.start_stretch):
+                    menu.aboutToShow.connect(lambda action=a: action.setEnabled(not self.focus_timer.isActive()))
+                if callback == self.toggle_quiet:
+                    a.setCheckable(True)
+                    a.setChecked(self.quiet_mode)
+                    menu.aboutToShow.connect(lambda action=a: action.setChecked(self.quiet_mode))
+                elif callback == self.toggle_nap:
+                    menu.aboutToShow.connect(lambda action=a: action.setText(
+                        '叫醒她' if self.state == 'sleeping' else '睡一会儿'))
+                elif callback == self.toggle_work:
+                    menu.aboutToShow.connect(lambda action=a: action.setText('结束工作' if self.working else '开始工作'))
+                elif callback == self.toggle_panel:
+                    menu.aboutToShow.connect(lambda action=a: action.setText('关闭状态栏' if self.panel_visible else '打开状态栏'))
+                elif callback == self.toggle_todo_panel:
+                    menu.aboutToShow.connect(lambda action=a: action.setText('关闭待办清单' if self.todo_panel_visible else '打开待办清单'))
+        return menu
+
+    def show_context_menu(self, pos):
+        menu = self.create_menu()
         menu.exec(pos)
+        menu.deleteLater()
 
 
 
@@ -1511,13 +1945,19 @@ class DesktopPet(QWidget):
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
+        if not delta:
+            return
         step = 10 if delta > 0 else -10
         new_w = max(80, min(400, self.pet_size.width() + step))
+        if new_w == self.pet_size.width():
+            return
         self.pet_size = QSize(new_w, new_w)
         self.setFixedSize(self.pet_size)
         self.label.setFixedSize(self.pet_size)
         self.load_frames()
         self.update_image()
+        self.on_screens_changed()
+        self.save_data()
 
 
 SINGLETON_NAME = 'CuteDesktopPetSingletonLock'
@@ -1526,11 +1966,25 @@ SINGLETON_NAME = 'CuteDesktopPetSingletonLock'
 def handle_new_connection(server, pet):
     while server.hasPendingConnections():
         client = server.nextPendingConnection()
-        if client.waitForReadyRead(500):
-            data = bytes(client.readAll().data())
-            if data == b'SHOW':
+        watch_local_client(client, pet)
+
+
+def watch_local_client(client, pet):
+    client.setReadBufferSize(4)
+    timeout = QTimer(client)
+    timeout.setSingleShot(True)
+    timeout.timeout.connect(client.deleteLater)
+    client.disconnected.connect(client.deleteLater)
+
+    def receive():
+        if client.bytesAvailable() >= 4:
+            if client.read(4) == b'SHOW':
                 pet.force_show()
-        client.deleteLater()
+            client.deleteLater()
+
+    client.readyRead.connect(receive)
+    timeout.start(500)
+    receive()
 
 
 def cleanup(local_server, tray):
@@ -1593,9 +2047,6 @@ def main():
     app.setQuitOnLastWindowClosed(True)
     app.setApplicationName('CuteDesktopPet')
 
-    # Automatically ensure desktop shortcut with 葡萄冻冻图标
-    create_desktop_shortcut()
-
     # Singleton: if another instance is running, tell it to show and exit.
     probe = QLocalSocket()
     probe.connectToServer(SINGLETON_NAME)
@@ -1616,6 +2067,8 @@ def main():
         logging.error(f'Unable to claim singleton: {local_server.errorString()}')
         sys.exit(1)
 
+    create_desktop_shortcut()
+
     pet = DesktopPet()
     local_server.newConnection.connect(lambda: handle_new_connection(local_server, pet))
     # Keep a reference so the server is not garbage collected.
@@ -1633,38 +2086,12 @@ def main():
         tray.setVisible(True)
 
 
-        menu = QMenu()
-
-        show_action = QAction('显示', menu)
-        show_action.triggered.connect(pet.force_show)
-        menu.addAction(show_action)
-
-        work_action = QAction('开始工作', menu)
-        work_action.triggered.connect(pet.start_work)
-        menu.addAction(work_action)
-
-        end_work_action = QAction('结束工作', menu)
-        end_work_action.triggered.connect(pet.end_work)
-        menu.addAction(end_work_action)
-
-        panel_action = QAction('状态栏', menu)
-        panel_action.triggered.connect(pet.toggle_panel)
-        menu.addAction(panel_action)
-
-        todo_action = QAction('待办清单', menu)
-        todo_action.triggered.connect(pet.toggle_todo_panel)
-        menu.addAction(todo_action)
-
-
-        menu.addSeparator()
-        quit_action = QAction('退出', menu)
-        quit_action.triggered.connect(app.quit)
-        menu.addAction(quit_action)
-        tray.setContextMenu(menu)
+        tray.setContextMenu(pet.create_menu())
     else:
         logging.warning('System tray is not available')
         tray = None
 
+    app.aboutToQuit.connect(pet.shutdown)
     app.aboutToQuit.connect(lambda: cleanup(local_server, tray))
 
     sys.exit(app.exec())

@@ -1,11 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+from PIL import Image
+
+root = Path(SPECPATH)
+runtime_frames = Path(workpath) / 'runtime_frames'
+runtime_frames.mkdir(parents=True, exist_ok=True)
+for source in (root / 'assets' / 'processed').glob('*.png'):
+    # The pet is at most 400 logical pixels. Keep enough detail for 2x DPI.
+    with Image.open(source) as image:
+        image = image.convert('RGBA')
+        image.thumbnail((800, 800), Image.Resampling.LANCZOS)
+        image.save(runtime_frames / source.name, optimize=True)
 
 a = Analysis(
     ['pet.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('assets/葡萄冻冻.ico', '.'), ('葡萄冻冻.png', '.')],
+    datas=[(str(runtime_frames / '*.png'), 'assets/processed'),
+           ('assets/app_icon.ico', 'assets'), ('assets/葡萄冻冻.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
