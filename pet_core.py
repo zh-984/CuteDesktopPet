@@ -64,6 +64,8 @@ def normalize_data(data, now):
         'todo_list': todos,
         'affection': number(data.get('affection'), maximum=100),
         'quiet_mode': data.get('quiet_mode') is True,
+        'auto_chase': data.get('auto_chase') is not False,
+        'auto_nap': data.get('auto_nap') is not False,
         'last_snack_date': data.get('last_snack_date') if isinstance(data.get('last_snack_date'), str) else '',
         'working': data.get('working') is True,
         'work_session_seconds': session,
@@ -119,13 +121,13 @@ def write_save(path, data):
 
 
 def behavior_weights(satiety, affection, working, recent):
-    """Contextual variety with a cooldown for the most recent action."""
-    weights = {'idle': 5, 'look': 2, 'wave': 1 + affection / 40,
-               'sleep': 1, 'dance': 1, 'bounce': 1, 'chase': 1, 'wander': 4}
+    """Choose which actions are eligible and how likely they are to play first."""
+    weights = {'look': 2, 'wave': 1 + affection / 20, 'sleep': 1,
+               'dance': 1, 'bounce': 1, 'chase': 1, 'wander': 4, 'stretch': 2}
     if satiety < 25:
         weights.update(sleep=5, dance=0, bounce=0, chase=0, wander=1)
     if working:
-        weights.update(idle=12, look=2, sleep=2, dance=0, bounce=0, chase=0, wander=0)
+        weights.update(look=2, sleep=2, dance=0, bounce=0, chase=0, wander=0, stretch=0)
     if recent in weights:
         weights[recent] *= 0.15
     return weights

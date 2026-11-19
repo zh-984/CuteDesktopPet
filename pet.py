@@ -10,13 +10,14 @@ from logging.handlers import RotatingFileHandler
 from focus_windows import foreground_window, window_monitor, window_pid
 from pet_core import REWARD_INTERVALS, behavior_weights, read_save, write_save
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon,
+    QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon, QCalendarWidget,
     QLineEdit, QDateTimeEdit, QPushButton, QCheckBox, QScrollArea,
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
 
 from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QDateTime, QStandardPaths
-from PyQt6.QtGui import QPixmap, QTransform, QAction, QCursor, QPainter, QColor, QFont, QPainterPath, QIcon
+from PyQt6.QtGui import (QPixmap, QTransform, QCursor, QPainter, QColor, QFont,
+                         QPainterPath, QIcon, QPalette, QTextCharFormat)
 
 
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
@@ -60,6 +61,14 @@ STARTUP_SPEECHES = [
     "我来陪你啦～单击一起玩，双击摸摸头！",
 ]
 
+AFFECTION_LINES = {
+    0: ['嘿嘿，好舒服～', '摸摸头，烦恼都飞走啦！', '有你在就很开心。'],
+    20: ['最喜欢和你待在一起啦 ♥', '今天也有好好陪着你喔。'],
+    50: ['今天也给你留了个位置，来我旁边坐吧。', '你一伸手，我就知道要摸摸头啦。'],
+    80: ['今天的悄悄话是：我很喜欢我们的日常。', '累了就靠一会儿，我在这里。'],
+}
+AFFECTION_HELP = '双击摸头增加亲密度。20、50、80 点解锁额外摸头台词，亲密度越高，每轮自主动作越容易先挥手。'
+
 SATIETY_MAX = 100
 SATIETY_DECAY_PER_HOUR = 4
 CANDY_AMOUNT = 2
@@ -70,6 +79,42 @@ CAKE_AMOUNT = 50
 def resource_path(rel):
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
+
+
+def todo_calendar():
+    calendar = QCalendarWidget()
+    calendar.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
+    calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+    palette = calendar.palette()
+    for role, color in {
+        QPalette.ColorRole.Window: '#f4effc', QPalette.ColorRole.Base: '#ffffff',
+        QPalette.ColorRole.AlternateBase: '#f8f5fc', QPalette.ColorRole.Text: '#4a3a6a',
+        QPalette.ColorRole.Button: '#f4effc',
+        QPalette.ColorRole.WindowText: '#4a3a6a', QPalette.ColorRole.ButtonText: '#4a3a6a',
+        QPalette.ColorRole.Highlight: '#7444aa', QPalette.ColorRole.HighlightedText: '#ffffff',
+    }.items():
+        palette.setColor(role, QColor(color))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor('#746788'))
+    calendar.setPalette(palette)
+    header = QTextCharFormat()
+    header.setBackground(QColor('#f4effc'))
+    header.setForeground(QColor('#4a3a6a'))
+    calendar.setHeaderTextFormat(header)
+    weekend = QTextCharFormat()
+    weekend.setForeground(QColor('#9b3768'))
+    for day in (Qt.DayOfWeek.Saturday, Qt.DayOfWeek.Sunday):
+        calendar.setWeekdayTextFormat(day, weekend)
+    calendar.setStyleSheet('''
+        QCalendarWidget QWidget#qt_calendar_navigationbar { background: #e6daf7; }
+        QCalendarWidget QToolButton { color: #392752; background: #e6daf7; }
+        QCalendarWidget QToolButton:hover { background: #d6c4ee; }
+        QCalendarWidget QSpinBox { color: #392752; background: #ffffff; }
+        QCalendarWidget QAbstractItemView {
+            color: #4a3a6a; background: #ffffff;
+            selection-color: #ffffff; selection-background-color: #7444aa;
+        }
+    ''')
+    return calendar
 
 
 class SpeechBubble(QWidget):
@@ -154,7 +199,7 @@ class TodoItemWidget(QWidget):
         text_layout.addWidget(self.text_label)
 
         due_at = item_data.get('due_at', 0)
-        target_time = datetime.fromtimestamp(due_at).strftime('%m-%d %H:%M') if due_at else ''
+        target_time = datetime.fromtimestamp(due_at).strftime('%Y-%m-%d %H:%M') if due_at else ''
         if target_time:
             time_label = QLabel(f"⏰ 截止 {target_time}")
             time_label.setStyleSheet("color: #8870b0; font-size: 9px;")
@@ -249,8 +294,9 @@ class TodoPanel(QWidget):
 
         self.time_edit = QDateTimeEdit()
         self.time_edit.setDateTime(QDateTime.currentDateTime().addSecs(3600))
-        self.time_edit.setDisplayFormat("MM-dd HH:mm")
+        self.time_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
         self.time_edit.setCalendarPopup(True)
+        self.time_edit.setCalendarWidget(todo_calendar())
         self.time_edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.time_edit.setStyleSheet("""
             QDateTimeEdit {
@@ -263,54 +309,6 @@ class TodoPanel(QWidget):
             }
         """)
         time_row.addWidget(self.time_edit, 1)
-
-        btn_up = QPushButton("▲")
-        btn_up.setFixedSize(14, 18)
-        btn_up.setToolTip("加时间")
-        btn_up.setStyleSheet("""
-            QPushButton {
-                background-color: #b39ddb;
-                color: #ffffff;
-                border: none;
-                border-radius: 3px;
-                font-size: 7px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #c7b8ea;
-            }
-            QPushButton:pressed {
-                background-color: #9575cd;
-            }
-        """)
-        btn_up.clicked.connect(self.time_edit.stepUp)
-        time_row.addWidget(btn_up)
-
-        btn_down = QPushButton("▼")
-        btn_down.setFixedSize(14, 18)
-        btn_down.setToolTip("减时间")
-        btn_down.setStyleSheet("""
-            QPushButton {
-                background-color: #b39ddb;
-                color: #ffffff;
-                border: none;
-                border-radius: 3px;
-                font-size: 7px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #c7b8ea;
-            }
-            QPushButton:pressed {
-                background-color: #9575cd;
-            }
-        """)
-        btn_down.clicked.connect(self.time_edit.stepDown)
-        time_row.addWidget(btn_down)
-
-
-
-
 
         add_btn = QPushButton("添加")
         add_btn.setFixedSize(42, 22)
@@ -693,6 +691,7 @@ class DesktopPet(QWidget):
         self.last_pet_time = -100.0
         self.heart_until = 0.0
         self.recent_behavior = None
+        self.actions_this_round = set()
         self.affection = 0.0
         self.quiet_mode = False
         self.last_snack_date = ''
@@ -762,8 +761,9 @@ class DesktopPet(QWidget):
         self.stretch_timer.timeout.connect(self.advance_stretch)
 
         self.behavior_timer = QTimer(self)
-        self.behavior_timer.timeout.connect(self.decide_behavior)
-        self.behavior_timer.start(15000)
+        self.behavior_timer.setSingleShot(True)
+        self.behavior_timer.timeout.connect(self.behavior_tick)
+        self.behavior_timer.start(random.randint(25, 50) * 1000)
 
         self.satiety_timer = QTimer(self)
         self.satiety_timer.timeout.connect(self.check_satiety)
@@ -812,6 +812,8 @@ class DesktopPet(QWidget):
             'reward_marks': self.reward_marks,
             'affection': self.affection,
             'quiet_mode': self.quiet_mode,
+            'auto_chase': self.auto_chase,
+            'auto_nap': self.auto_nap,
             'last_snack_date': self.last_snack_date,
             'pet_size': self.pet_size.width(),
             'position': [self.x(), self.y()],
@@ -828,7 +830,7 @@ class DesktopPet(QWidget):
         for error in errors:
             logging.warning('Save recovery: %s', error)
         for key in ('satiety', 'candy_count', 'burger_count', 'cake_count', 'todo_list',
-                    'affection', 'quiet_mode', 'last_snack_date', 'working', 'work_session_seconds',
+                    'affection', 'quiet_mode', 'auto_chase', 'auto_nap', 'last_snack_date', 'working', 'work_session_seconds',
                     'work_total_seconds', 'reward_marks'):
             setattr(self, key, data[key])
         self.next_stretch_seconds = (int(self.work_session_seconds // 2700) + 1) * 2700
@@ -1162,8 +1164,13 @@ class DesktopPet(QWidget):
             self.show_speech(text, 3500, ambient=True)
         self.schedule_next_speech()
 
+    def behavior_tick(self):
+        self.behavior_timer.start(random.randint(25, 50) * 1000)
+        self.decide_behavior()
+
     def decide_behavior(self):
-        if self.press_pos is not None or self.click_timer.isActive() or self.focus_timer.isActive():
+        if (self.press_pos is not None or self.click_timer.isActive() or self.focus_timer.isActive()
+                or QApplication.activePopupWidget()):
             return
         # Don't interrupt active movement, stretching, or short animations.
         if self.state in ('drag', 'jump', 'fall', 'run', 'walk', 'chase', 'stretch',
@@ -1190,15 +1197,25 @@ class DesktopPet(QWidget):
 
         if self.state == 'pajamas':
             self.start_idle()
-        if self.quiet_mode or random.random() > 0.55:
+        if self.quiet_mode:
             return
         weights = behavior_weights(self.satiety, self.affection, self.working, self.recent_behavior)
-        action = random.choices(list(weights), weights=list(weights.values()), k=1)[0]
+        if not self.auto_chase:
+            weights['chase'] = 0
+        if not self.auto_nap:
+            weights['sleep'] = 0
+        eligible = {name: weight for name, weight in weights.items() if weight > 0}
+        remaining = [name for name in eligible if name not in self.actions_this_round]
+        if not remaining:
+            self.actions_this_round.clear()
+            remaining = [name for name in eligible if name != self.recent_behavior] or list(eligible)
+        action = random.choices(remaining, weights=[eligible[name] for name in remaining], k=1)[0]
+        self.actions_this_round.add(action)
         self.recent_behavior = action
-        {'idle': self.start_idle, 'look': self.start_playful_look,
-         'wave': self.start_playful_wave, 'sleep': self.start_playful_sleep,
+        {'look': self.start_playful_look, 'wave': self.start_playful_wave, 'sleep': self.start_playful_sleep,
          'dance': self.start_dance, 'bounce': self.start_playful_bounce,
-         'chase': self.start_playful_chase, 'wander': self.start_wander}[action]()
+         'chase': self.start_playful_chase, 'wander': self.start_wander,
+         'stretch': lambda: self.start_stretch(remind=False)}[action]()
 
     def play_with_pet(self):
         if self.state == 'drag':
@@ -1226,9 +1243,7 @@ class DesktopPet(QWidget):
         self.heart_until = now + 1.6
         self.frame_index = 0
         self.update_image()
-        lines = ['嘿嘿，好舒服～', '摸摸头，烦恼都飞走啦！', '有你在就很开心。']
-        if self.affection >= 20:
-            lines += ['最喜欢和你待在一起啦 ♥', '今天也有好好陪着你喔。']
+        lines = [line for level, unlocked in AFFECTION_LINES.items() if self.affection >= level for line in unlocked]
         self.show_speech(random.choice(lines), 2200)
         self.save_data()
         self.refresh_panel()
@@ -1320,13 +1335,14 @@ class DesktopPet(QWidget):
         self.frame_index = 0
         self.update_image()
 
-    def start_stretch(self):
+    def start_stretch(self, *, remind=True):
         """Stretch 1-2-3 sequence with 1 second interval between frames."""
         self.state = 'stretch'
         self.stretch_step = 0
         self.vx = 0.0
         self.vy = 0.0
-        self.show_speech('站起来活动一下脖子、喝口水吧~', 4500)
+        if remind:
+            self.show_speech('站起来活动一下脖子、喝口水吧~', 4500)
         self.update_image()
         self.stretch_timer.start(1000)
 
@@ -1877,57 +1893,59 @@ class DesktopPet(QWidget):
         self.status_panel.close()
         self.todo_panel.close()
 
-    def create_menu(self):
-        menu = QMenu(self)
-        work_text = '结束工作' if self.working else '开始工作'
-        panel_text = '关闭状态栏' if self.panel_visible else '打开状态栏'
-        todo_text = '关闭待办清单' if self.todo_panel_visible else '打开待办清单'
-        actions = [
-            ('显示桌宠', self.force_show),
-            ('开启专注模式', self.toggle_focus),
-            ('追鼠标', self.start_playful_chase),
-            ('摸摸头 ♥', self.pet_head),
-            ('领取今日零食', self.daily_snack),
-            ('睡一会儿', self.toggle_nap),
-            ('安静陪伴', self.toggle_quiet),
-            (None, None),
-            ('跳跃', self.start_jump),
-            ('跳舞', self.start_dance),
-            ('伸懒腰', self.start_stretch),
-            (None, None),
-            (work_text, self.toggle_work),
-            (panel_text, self.toggle_panel),
-            (todo_text, self.toggle_todo_panel),
-            (None, None),
-            ('退出', self.close),
-        ]
+    def toggle_auto_setting(self, name):
+        setattr(self, name, not getattr(self, name))
+        self.save_data()
 
-        for text, callback in actions:
-            if text is None:
-                menu.addSeparator()
-            else:
-                a = QAction(text, menu)
-                a.triggered.connect(callback)
-                menu.addAction(a)
-                if callback == self.toggle_focus:
-                    menu.aboutToShow.connect(lambda action=a: action.setText(
-                        '结束专注模式' if self.focus_timer.isActive() else '开启专注模式'))
-                if callback in (self.start_playful_chase, self.pet_head, self.toggle_nap,
-                                self.toggle_quiet, self.start_jump, self.start_dance, self.start_stretch):
-                    menu.aboutToShow.connect(lambda action=a: action.setEnabled(not self.focus_timer.isActive()))
-                if callback == self.toggle_quiet:
-                    a.setCheckable(True)
-                    a.setChecked(self.quiet_mode)
-                    menu.aboutToShow.connect(lambda action=a: action.setChecked(self.quiet_mode))
-                elif callback == self.toggle_nap:
-                    menu.aboutToShow.connect(lambda action=a: action.setText(
-                        '叫醒她' if self.state == 'sleeping' else '睡一会儿'))
-                elif callback == self.toggle_work:
-                    menu.aboutToShow.connect(lambda action=a: action.setText('结束工作' if self.working else '开始工作'))
-                elif callback == self.toggle_panel:
-                    menu.aboutToShow.connect(lambda action=a: action.setText('关闭状态栏' if self.panel_visible else '打开状态栏'))
-                elif callback == self.toggle_todo_panel:
-                    menu.aboutToShow.connect(lambda action=a: action.setText('关闭待办清单' if self.todo_panel_visible else '打开待办清单'))
+    def create_menu(self, *, from_tray=False):
+        menu = QMenu(self)
+
+        def add(parent, label, callback, *, enabled=None, checked=None):
+            action = parent.addAction(label() if callable(label) else label)
+            action.triggered.connect(lambda: callback())
+            if checked is not None:
+                action.setCheckable(True)
+
+            def refresh():
+                if callable(label):
+                    action.setText(label())
+                if enabled is not None:
+                    action.setEnabled(enabled())
+                if checked is not None:
+                    action.setChecked(checked())
+
+            refresh()
+            parent.aboutToShow.connect(refresh)
+            return action
+
+        def can_interrupt():
+            return not self.focus_timer.isActive()
+
+        if from_tray:
+            add(menu, '显示桌宠', self.force_show)
+        interaction = menu.addMenu('互动')
+        add(interaction, '摸摸头 ♥', self.pet_head, enabled=can_interrupt)
+        add(interaction, '领取今日零食', self.daily_snack)
+        add(interaction, '亲密度说明', lambda: self.show_speech(AFFECTION_HELP, 7000))
+        menu.addSeparator()
+        add(menu, lambda: '结束工作' if self.working else '开始工作', self.toggle_work)
+        add(menu, lambda: '关闭状态栏' if self.panel_visible else '打开状态栏', self.toggle_panel)
+        add(menu, lambda: '关闭待办清单' if self.todo_panel_visible else '打开待办清单', self.toggle_todo_panel)
+        add(menu, lambda: '结束专注模式' if self.focus_timer.isActive() else '开启专注模式', self.toggle_focus)
+        menu.addSeparator()
+        settings = menu.addMenu('设置')
+        add(settings, '安静陪伴', self.toggle_quiet, enabled=can_interrupt, checked=lambda: self.quiet_mode)
+        add(settings, '自动追鼠标', lambda: self.toggle_auto_setting('auto_chase'), checked=lambda: self.auto_chase)
+        add(settings, '自动小睡', lambda: self.toggle_auto_setting('auto_nap'), checked=lambda: self.auto_nap)
+        settings.addSeparator()
+        add(settings, '追鼠标', self.start_playful_chase, enabled=can_interrupt)
+        add(settings, lambda: '叫醒她' if self.state == 'sleeping' else '睡一会儿',
+            self.toggle_nap, enabled=can_interrupt)
+        motions = settings.addMenu('其他动作')
+        add(motions, '伸懒腰', self.start_stretch, enabled=can_interrupt)
+        add(motions, '跳跃', self.start_jump, enabled=can_interrupt)
+        add(motions, '跳舞', self.start_dance, enabled=can_interrupt)
+        add(menu, '退出', self.close)
         return menu
 
     def show_context_menu(self, pos):
@@ -2093,7 +2111,7 @@ def main():
         tray.setVisible(True)
 
 
-        tray.setContextMenu(pet.create_menu())
+        tray.setContextMenu(pet.create_menu(from_tray=True))
     else:
         logging.warning('System tray is not available')
         tray = None

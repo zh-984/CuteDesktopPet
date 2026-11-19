@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
-from PyQt6.QtCore import QDateTime, QEvent, QPoint, QPointF, Qt
+from PyQt6.QtCore import QDate, QDateTime, QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QCursor, QMouseEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
@@ -163,6 +163,49 @@ class PetTests(unittest.TestCase):
         self.assertFalse(self.p.bubble.isVisible())
         self.p.pet_head()
         self.assertTrue(self.p.bubble.isVisible())
+
+    def test_calendar_selects_dates_across_year_boundary(self):
+        edit = self.p.todo_panel.time_edit
+        edit.setDate(QDate(2026, 12, 31))
+        calendar = edit.calendarWidget()
+        calendar.setSelectedDate(QDate(2027, 1, 1))
+        calendar.activated.emit(QDate(2027, 1, 1))
+        self.assertEqual(edit.date(), QDate(2027, 1, 1))
+        self.assertIn('2027-01-01', edit.text())
+
+    def test_menu_order_and_persisted_automatic_settings(self):
+        menu = self.p.create_menu()
+        labels = [action.text() for action in menu.actions() if not action.isSeparator()]
+        self.assertEqual(labels[-4:], ['打开待办清单', '开启专注模式', '设置', '退出'])
+        settings = next(action.menu() for action in menu.actions() if action.text() == '设置')
+        actions = {action.text(): action for action in settings.actions()}
+        self.assertIn('追鼠标', actions)
+        self.assertIn('睡一会儿', actions)
+        self.assertTrue(actions['自动追鼠标'].isChecked())
+        actions['自动追鼠标'].trigger()
+        actions['自动小睡'].trigger()
+        stored, _ = read_save(pet.SAVE_DATA_PATH, pet.LEGACY_DATA_PATH, time.time())
+        self.assertFalse(stored['auto_chase'])
+        self.assertFalse(stored['auto_nap'])
+
+    def test_autonomous_rotation_includes_chase_and_stretch_without_duplicates(self):
+        self.p.satiety = 80
+        with patch('pet.datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 19, 12)
+            actions = []
+            for _ in range(9):
+                self.p.start_idle()
+                self.p.decide_behavior()
+                actions.append(self.p.recent_behavior)
+            self.assertEqual(len(set(actions[:8])), 8)
+            self.assertIn('chase', actions[:8])
+            self.assertIn('stretch', actions[:8])
+            self.assertNotEqual(actions[7], actions[8])
+            self.p.auto_chase = self.p.auto_nap = False
+            for _ in range(12):
+                self.p.start_idle()
+                self.p.decide_behavior()
+                self.assertNotIn(self.p.recent_behavior, ('chase', 'sleep'))
 
     def test_todo_cross_midnight_and_reward_only_once(self):
         tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=30, second=0)
