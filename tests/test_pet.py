@@ -23,6 +23,11 @@ from pet_core import (AFFECTION_THRESHOLDS, DAILY_PET_AFFECTION_LIMIT, WORK_AFFE
 
 
 class StorageTests(unittest.TestCase):
+    def test_unsupported_coordinates_do_not_prevent_loading_other_save_data(self):
+        data = normalize_data({'position': [1e30, -10], 'candy_count': 7}, time.time())
+        self.assertIsNone(data['position'])
+        self.assertEqual(data['candy_count'], 7)
+
     def test_affection_thresholds_and_old_save_migration(self):
         self.assertEqual(affection_tier(0), 0)
         for rank, threshold in enumerate(AFFECTION_THRESHOLDS, start=1):
@@ -210,6 +215,19 @@ class PetTests(unittest.TestCase):
         calendar.activated.emit(calendar.selectedDate())
         self.assertEqual(edit.date(), QDate(2027, 12, 4))
 
+    def test_todo_deadlines_outside_1970_to_2099_round_trip(self):
+        panel = self.p.todo_panel
+        chosen = (QDate(1955, 4, 12), QDate(2120, 7, 8))
+        for date in chosen:
+            panel.input_edit.setText('Date round trip')
+            panel.time_edit.setDate(date)
+            panel.add_todo()
+        before = [item['due_at'] for item in self.p.todo_list]
+        self.p.load_data()
+        after = [item['due_at'] for item in self.p.todo_list]
+        self.assertEqual(after, before)
+        self.assertEqual([QDateTime.fromSecsSinceEpoch(value).date() for value in after], list(chosen))
+
     def test_clicking_the_same_submenu_toggles_without_closing_root(self):
         def wait_for_visibility(submenu, visible):
             for _ in range(20):
@@ -266,6 +284,32 @@ class PetTests(unittest.TestCase):
                 self.app.sendEvent(child, event)
             self.assertFalse(child.isVisible())
             self.assertTrue(menu.isVisible())
+
+    def test_submenu_click_uses_visibility_at_press_even_if_hover_changes_it(self):
+        menu = self.p.create_menu()
+        self.addCleanup(menu.close)
+        menu.popup(QPoint(90, 90))
+        self.app.processEvents()
+        for name in ('设置', '互动'):
+            action = next(a for a in menu.actions() if a.text() == name)
+            child = action.menu()
+            pos = menu.actionGeometry(action).center()
+            menu.setActiveAction(action)
+            self.assertTrue(child.isVisible())
+            QTest.mousePress(menu, Qt.MouseButton.LeftButton, pos=pos)
+            # Qt's hover timer can close the child before the button is released.
+            child.hide()
+            QTest.mouseRelease(menu, Qt.MouseButton.LeftButton, pos=pos)
+            self.assertFalse(child.isVisible())
+            self.assertTrue(menu.isVisible())
+
+            QTest.mousePress(menu, Qt.MouseButton.LeftButton, pos=pos)
+            # A pending hover can also open it during a click intended to open.
+            menu.setActiveAction(action)
+            QTest.mouseRelease(menu, Qt.MouseButton.LeftButton, pos=pos)
+            self.assertTrue(child.isVisible())
+            child.hide()
+            menu.setActiveAction(None)
 
     def test_bounce_advances_on_physics_ticks_and_lands_at_start_height(self):
         self.p.start_playful_bounce()

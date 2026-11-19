@@ -12,6 +12,9 @@ REWARD_INTERVALS = {'candy': 15 * 60, 'burger': 2 * 3600, 'cake': 5 * 3600}
 AFFECTION_THRESHOLDS = (20, 50, 100, 200, 400, 600, 1000, 1500, 2000, 4000)
 DAILY_PET_AFFECTION_LIMIT = 10
 WORK_AFFECTION_INTERVAL = 2 * 3600
+# Include the calendar's entire local date range, with one day for UTC offsets.
+MIN_TODO_TIMESTAMP = -62135683200
+MAX_TODO_TIMESTAMP = 253402387199
 
 
 def affection_tier(points):
@@ -42,27 +45,29 @@ def normalize_data(data, now):
     for index, item in enumerate(raw_todos if isinstance(raw_todos, list) else []):
         if not isinstance(item, dict) or not isinstance(item.get('text'), str):
             continue
-        item = dict(item)
-        item.setdefault('id', f'legacy-{index}')
-        item['completed'] = bool(item.get('completed', False))
-        # Completed legacy items may already have paid out.
-        item.setdefault('reward_claimed', item['completed'])
-        if not number(item.get('due_at')):
+        identity = item.get('id')
+        if not (isinstance(identity, (str, int)) or isinstance(identity, float) and math.isfinite(identity)):
+            identity = f'legacy-{index}'
+        completed = bool(item.get('completed', False))
+        deadline = number(item.get('due_at'), default=None, minimum=-float('inf'))
+        if deadline is not None and not MIN_TODO_TIMESTAMP <= deadline <= MAX_TODO_TIMESTAMP:
+            deadline = None
+        if deadline is None:
             try:
                 hour, minute = map(int, item.get('target_time', '').split(':'))
                 # Legacy HH:mm entries belong to the last saved day, never silently tomorrow.
-                item['due_at'] = datetime.fromtimestamp(saved_at).replace(
+                deadline = datetime.fromtimestamp(saved_at).replace(
                     hour=hour, minute=minute, second=59, microsecond=0).timestamp()
             except (ValueError, TypeError, AttributeError, OSError, OverflowError):
-                item['due_at'] = 0
-        else:
-            item['due_at'] = number(item['due_at'], maximum=4102444799)
-        todos.append(item)
+                pass
+        todos.append({'id': identity, 'text': item['text'], 'completed': completed,
+                      'reward_claimed': bool(item.get('reward_claimed', completed)),
+                      'due_at': int(deadline) if deadline is not None else None})
     # Offline sleep is gentle: at most 20 satiety points lost per absence.
     offline_decay = min(20.0, max(0, now - saved_at) * 2 / 3600)
     position = data.get('position')
     if not (isinstance(position, list) and len(position) == 2
-            and all(isinstance(v, (int, float)) and math.isfinite(v) for v in position)):
+            and all(isinstance(v, (int, float)) and -(2 ** 30) <= v <= 2 ** 30 for v in position)):
         position = None
     return {
         'satiety': max(0, number(data.get('satiety'), 100, maximum=100) - offline_decay),

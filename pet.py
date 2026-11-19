@@ -17,7 +17,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
 
-from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QSize, QRect, QDateTime, QLocale, QStandardPaths
+from PyQt6.QtCore import (Qt, QEvent, QTimer, QPoint, QSize, QRect, QDateTime, QLocale,
+                          QStandardPaths, QAbstractListModel, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QTransform, QCursor, QPainter, QColor, QFont,
                          QPainterPath, QIcon, QPalette, QTextCharFormat)
 
@@ -97,6 +98,21 @@ class TodoCalendar(QCalendarWidget):
         return size
 
 
+class CalendarYears(QAbstractListModel):
+    def __init__(self, first, last, parent):
+        super().__init__(parent)
+        self.first = first
+        self.count = last - first + 1
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else self.count
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if index.isValid() and role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            return str(self.first + index.row())
+        return None
+
+
 def todo_calendar(minimum_date, maximum_date):
     calendar = TodoCalendar()
     calendar.setDateRange(minimum_date, maximum_date)
@@ -130,10 +146,11 @@ def todo_calendar(minimum_date, maximum_date):
     year.setToolTip('选择年份')
     year.setMinimumWidth(60)
     first_year, last_year = minimum_date.year(), maximum_date.year()
-    year.addItems([str(value) for value in range(first_year, last_year + 1)])
+    year.setModel(CalendarYears(first_year, last_year, year))
+    year.setMinimumContentsLength(4)
+    year.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     for selector in (month, year):
         selector.setMaxVisibleItems(12)
-        selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow)
 
     def update_navigation(shown_year, shown_month):
         month.setCurrentIndex(shown_month - 1)
@@ -225,24 +242,27 @@ class PetMenu(QMenu):
         inside_child = receiver is not self and receiver.rect().contains(receiver.mapFromGlobal(point))
         action = None if inside_child else self.actionAt(self.mapFromGlobal(point))
         if kind == mouse.MouseMove:
-            if self.collapsed_action and action == self.collapsed_action:
+            if self.pressed_submenu or (self.collapsed_action and action == self.collapsed_action):
                 return True
             self.collapsed_action = None
         elif event.button() == Qt.MouseButton.LeftButton:
             if kind in (mouse.MouseButtonPress, mouse.MouseButtonDblClick):
                 self.collapsed_action = None
                 if action and action.isEnabled() and action.menu():
-                    self.pressed_submenu = action
+                    # Capture the intent now: Qt's hover timers may still
+                    # open or close the child before this click is released.
+                    self.pressed_submenu = action, not action.menu().isVisible()
                     return True
             elif self.pressed_submenu:
-                pressed, self.pressed_submenu = self.pressed_submenu, None
+                pressed, should_open = self.pressed_submenu
+                self.pressed_submenu = None
                 if action == pressed:
-                    was_visible = pressed.menu().isVisible()
-                    self.setActiveAction(None)
-                    if was_visible:
-                        pressed.menu().hide()
+                    if not should_open:
                         self.collapsed_action = pressed
-                    else:
+                        self.setActiveAction(None)
+                        pressed.menu().hide()
+                    elif not pressed.menu().isVisible():
+                        self.setActiveAction(None)
                         self.setActiveAction(pressed)
                 return True
         return super().eventFilter(receiver, event)
@@ -333,8 +353,8 @@ class TodoItemWidget(QWidget):
         self.text_label.setStyleSheet("color: #4a3a6a; font-size: 11px; font-weight: bold;")
         text_layout.addWidget(self.text_label)
 
-        due_at = item_data.get('due_at', 0)
-        target_time = datetime.fromtimestamp(due_at).strftime('%Y-%m-%d %H:%M') if due_at else ''
+        due_at = item_data.get('due_at')
+        target_time = QDateTime.fromSecsSinceEpoch(int(due_at)).toString('yyyy-MM-dd HH:mm') if due_at is not None else ''
         if target_time:
             time_label = QLabel(f"⏰ 截止 {target_time}")
             time_label.setStyleSheet("color: #8870b0; font-size: 9px;")
@@ -570,7 +590,8 @@ class TodoPanel(QWidget):
     def on_item_completed(self, item_data, is_completed):
         item_data['completed'] = is_completed
         if is_completed:
-            if not item_data.get('reward_claimed', False) and time.time() <= item_data.get('due_at', 0):
+            deadline = item_data.get('due_at')
+            if not item_data.get('reward_claimed', False) and deadline is not None and time.time() <= deadline:
                 item_data['reward_claimed'] = True
                 self.pet.candy_count += 1
                 self.pet.show_speech("准时完成待办！🍬 获得1颗糖果！", 3000)
@@ -611,6 +632,7 @@ class StatusPanel(QWidget):
         self.working = False
         self.work_elapsed = 0
         self.todo_count = 0
+        self._displayed = None
 
         # Clickable row rectangles
         self._row_rects = {}
@@ -619,6 +641,11 @@ class StatusPanel(QWidget):
         self.hide()
 
     def update_data(self, candy, burger, cake, satiety, working, work_elapsed, todo_count=0):
+        displayed = (candy, burger, cake, round(satiety, 1), working,
+                     int(work_elapsed // 60) if working else 0, todo_count, self.pet.affection)
+        if displayed == self._displayed:
+            return
+        self._displayed = displayed
         self.candy_count = candy
         self.burger_count = burger
         self.cake_count = cake
@@ -1779,13 +1806,17 @@ class DesktopPet(QWidget):
         return bool(earned)
 
     def refresh_panel(self):
-        self.setToolTip(f'葡萄冻冻 · 亲密度 {self.affection} · {affection_tier(self.affection)} 阶\n'
-                        '单击玩耍 · 双击摸头 · 按住拖动搬家 · 右键菜单')
+        tip = (f'葡萄冻冻 · 亲密度 {self.affection} · {affection_tier(self.affection)} 阶\n'
+               '单击玩耍 · 双击摸头 · 按住拖动搬家 · 右键菜单')
+        if self.toolTip() != tip:
+            self.setToolTip(tip)
         if self.panel_visible and self.working:
             if not self.panel_refresh_timer.isActive():
                 self.panel_refresh_timer.start(1000)
         else:
             self.panel_refresh_timer.stop()
+        if not self.panel_visible:
+            return
         uncompleted_count = sum(1 for item in self.todo_list if not item.get('completed', False))
         elapsed = self.get_work_elapsed()
         self.status_panel.update_data(
@@ -1797,13 +1828,13 @@ class DesktopPet(QWidget):
             elapsed,
             uncompleted_count,
         )
-        self.update_panel_position()
 
 
     def toggle_panel(self):
         self.panel_visible = not self.panel_visible
         if self.panel_visible:
             self.refresh_panel()
+            self.update_panel_position()
             self.status_panel.show()
             self.status_panel.raise_()
         else:
@@ -1813,7 +1844,6 @@ class DesktopPet(QWidget):
     def toggle_todo_panel(self):
         self.todo_panel_visible = not self.todo_panel_visible
         if self.todo_panel_visible:
-            self.todo_panel.refresh_items()
             self.update_panel_position()
             self.todo_panel.show()
             self.todo_panel.raise_()
