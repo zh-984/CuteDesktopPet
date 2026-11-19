@@ -17,10 +17,22 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 import pet
-from pet_core import behavior_weights, normalize_data, read_save, write_save
+import startup_windows
+from pet_core import (AFFECTION_THRESHOLDS, DAILY_PET_AFFECTION_LIMIT, WORK_AFFECTION_INTERVAL,
+                      affection_tier, behavior_weights, normalize_data, read_save, write_save)
 
 
 class StorageTests(unittest.TestCase):
+    def test_affection_thresholds_and_old_save_migration(self):
+        self.assertEqual(affection_tier(0), 0)
+        for rank, threshold in enumerate(AFFECTION_THRESHOLDS, start=1):
+            self.assertEqual(affection_tier(threshold - 1), rank - 1)
+            self.assertEqual(affection_tier(threshold), rank)
+        save = normalize_data({'affection': 4500}, time.time())
+        self.assertEqual(save['affection'], 4500)
+        self.assertEqual(affection_tier(save['affection']), 10)
+        self.assertEqual(save['work_affection_claimed'], 0)
+
     def test_offline_sleep_is_capped_and_future_save_does_not_add_food(self):
         self.assertEqual(normalize_data({'satiety': 100, 'last_save_time': 0}, 100000)['satiety'], 80)
         self.assertEqual(normalize_data({'satiety': 50, 'last_save_time': 100}, 0)['satiety'], 50)
@@ -179,14 +191,67 @@ class PetTests(unittest.TestCase):
         self.assertEqual(labels[-4:], ['打开待办清单', '开启专注模式', '设置', '退出'])
         settings = next(action.menu() for action in menu.actions() if action.text() == '设置')
         actions = {action.text(): action for action in settings.actions()}
-        self.assertIn('追鼠标', actions)
-        self.assertIn('睡一会儿', actions)
+        interaction = next(action.menu() for action in menu.actions() if action.text() == '互动')
+        self.assertEqual([action.text() for action in interaction.actions() if not action.isSeparator()][-5:],
+                         ['追鼠标', '睡一会儿', '伸懒腰', '跳跃', '跳舞'])
+        self.assertIn('亲密度说明', actions)
+        self.assertNotIn('其他动作', actions)
         self.assertTrue(actions['自动追鼠标'].isChecked())
         actions['自动追鼠标'].trigger()
         actions['自动小睡'].trigger()
         stored, _ = read_save(pet.SAVE_DATA_PATH, pet.LEGACY_DATA_PATH, time.time())
         self.assertFalse(stored['auto_chase'])
         self.assertFalse(stored['auto_nap'])
+
+    def test_startup_menu_toggle_and_boot_greeting(self):
+        with patch.object(startup_windows, 'registered_command', side_effect=[None, None, 'registered']), \
+             patch.object(startup_windows, 'set_enabled') as change:
+            settings = next(action.menu() for action in self.p.create_menu().actions() if action.text() == '设置')
+            startup = next(action for action in settings.actions() if action.text() == '开机自启动')
+            self.assertTrue(startup.isCheckable())
+            self.assertFalse(startup.isChecked())
+            startup.trigger()
+            settings.aboutToShow.emit()
+            change.assert_called_once_with(True)
+            self.assertTrue(startup.isChecked())
+        boot_pet = pet.DesktopPet(autostart=True)
+        self.addCleanup(boot_pet.deleteLater)
+        with patch.object(boot_pet, 'show_speech') as speak:
+            boot_pet.startup_timer.timeout.emit()
+            speak.assert_called_once_with(pet.AUTOSTART_GREETING, 4500, ambient=True)
+        boot_pet.shutdown()
+
+    def test_petting_cap_survives_reload_and_resets_next_day(self):
+        with patch('pet.datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 19, 12)
+            for _ in range(DAILY_PET_AFFECTION_LIMIT + 1):
+                self.p.last_pet_time = -100.0
+                self.p.pet_head()
+            self.assertEqual(self.p.affection, DAILY_PET_AFFECTION_LIMIT)
+            self.p.load_data()
+            self.p.pet_head()
+            self.assertEqual(self.p.affection, DAILY_PET_AFFECTION_LIMIT)
+            clock.now.return_value = datetime(2026, 11, 20, 12)
+            self.p.last_pet_time = -100.0
+            self.p.pet_head()
+            self.assertEqual(self.p.affection, DAILY_PET_AFFECTION_LIMIT + 1)
+            self.assertEqual(self.p.pet_affection_today, 1)
+
+    def test_work_affection_accrues_across_sessions_without_daily_or_rank_cap(self):
+        self.p.affection = 4000
+        self.p.pet_affection_today = DAILY_PET_AFFECTION_LIMIT
+        self.p.start_work()
+        self.p.work_total_seconds = WORK_AFFECTION_INTERVAL - 5
+        self.p.end_work()
+        self.assertEqual(self.p.affection, 4000)
+        self.p.start_work()
+        self.p.work_last_tick -= 6
+        self.p.check_satiety()
+        self.assertEqual(self.p.affection, 4001)
+        self.assertEqual(self.p.pet_affection_today, DAILY_PET_AFFECTION_LIMIT)
+        self.p.load_data()
+        self.p.check_satiety()
+        self.assertEqual(self.p.affection, 4001)
 
     def test_autonomous_rotation_includes_chase_and_stretch_without_duplicates(self):
         self.p.satiety = 80

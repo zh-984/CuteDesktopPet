@@ -8,9 +8,11 @@ import uuid
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from focus_windows import foreground_window, window_monitor, window_pid
-from pet_core import REWARD_INTERVALS, behavior_weights, read_save, write_save
+from pet_core import (AFFECTION_THRESHOLDS, DAILY_PET_AFFECTION_LIMIT, REWARD_INTERVALS,
+                      WORK_AFFECTION_INTERVAL, affection_tier, behavior_weights, read_save, write_save)
+import startup_windows
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QLabel, QMenu, QSystemTrayIcon, QCalendarWidget,
+    QApplication, QWidget, QLabel, QMenu, QMessageBox, QSystemTrayIcon, QCalendarWidget,
     QLineEdit, QDateTimeEdit, QPushButton, QCheckBox, QScrollArea,
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
@@ -57,17 +59,21 @@ IDLE_SPEECHES = [
     "抱抱，给你充充电",
     "深呼吸，放松一下心情",
 ]
-STARTUP_SPEECHES = [
-    "我来陪你啦～单击一起玩，双击摸摸头！",
-]
-
-AFFECTION_LINES = {
-    0: ['嘿嘿，好舒服～', '摸摸头，烦恼都飞走啦！', '有你在就很开心。'],
-    20: ['最喜欢和你待在一起啦 ♥', '今天也有好好陪着你喔。'],
-    50: ['今天也给你留了个位置，来我旁边坐吧。', '你一伸手，我就知道要摸摸头啦。'],
-    80: ['今天的悄悄话是：我很喜欢我们的日常。', '累了就靠一会儿，我在这里。'],
-}
-AFFECTION_HELP = '双击摸头增加亲密度。20、50、80 点解锁额外摸头台词，亲密度越高，每轮自主动作越容易先挥手。'
+MANUAL_GREETING = '我来陪你啦～单击一起玩，双击摸摸头！'
+AUTOSTART_GREETING = '电脑醒啦，葡萄冻冻也醒啦！今天也陪你一起开机～'
+AFFECTION_LINES = (
+    ('嘿嘿，好舒服～', '今天也一起玩吧。'),
+    ('能和你待在一起，我好开心呀。', '你来摸头啦，我等你好久了～'),
+    ('哥哥，今天也想跟你坐在一起～', '哥哥的手好暖，再摸一下嘛。'),
+    ('哥哥，哥哥好棒～', '哥哥累啦？我给你留了个位置。'),
+    ('今天最开心的事，就是哥哥来陪我。', '哥哥认真起来的时候，特别好看。'),
+    ('哥哥好腻害，给哥哥一个亲亲～', '哥哥，今天的抱抱可以久一点吗？'),
+    ('哥哥忙完就来找我吧，我想听听你今天的故事。', '我把今天的好心情留了一半给哥哥。'),
+    ('每次哥哥打开电脑，我都想第一个跟你打招呼。', '哥哥，累了就靠过来，我陪你慢慢歇。'),
+    ('哥哥的手一伸过来，我就忍不住笑啦。', '哥哥，今天不管顺不顺利，都有我陪你。'),
+    ('哥哥，我喜欢我们一起度过的每个普通日子。', '给哥哥一个抱抱，再偷偷给你一个亲亲～'),
+    ('哥哥，谢谢你一直把葡萄冻冻带在身边。今天也最喜欢你啦～', '哥哥，四千个小爱心都送给你，再附赠一个亲亲～'),
+)
 
 SATIETY_MAX = 100
 SATIETY_DECAY_PER_HOUR = 4
@@ -632,8 +638,7 @@ class StatusPanel(QWidget):
         p.drawText(pad, y + 10, work_text)
 
         p.setPen(QColor(150, 100, 155))
-        p.drawText(pad, y + 30, f'♥ 亲密度 {int(self.pet.affection)} · '
-                   + ('安静陪伴' if self.pet.quiet_mode else '自在玩耍'))
+        p.drawText(pad, y + 30, f'♥ 亲密度 {self.pet.affection} · {affection_tier(self.pet.affection)} 阶')
 
         p.end()
 
@@ -641,7 +646,7 @@ class StatusPanel(QWidget):
 
 
 class DesktopPet(QWidget):
-    def __init__(self):
+    def __init__(self, *, autostart=False):
         super().__init__()
         logging.info('DesktopPet init')
         self.setWindowFlags(
@@ -692,7 +697,7 @@ class DesktopPet(QWidget):
         self.heart_until = 0.0
         self.recent_behavior = None
         self.actions_this_round = set()
-        self.affection = 0.0
+        self.affection = 0
         self.quiet_mode = False
         self.last_snack_date = ''
         self.saved_position = None
@@ -780,7 +785,7 @@ class DesktopPet(QWidget):
         self.startup_timer = QTimer(self)
         self.startup_timer.setSingleShot(True)
         self.startup_timer.timeout.connect(
-            lambda: self.show_speech(STARTUP_SPEECHES[0], 4500, ambient=True))
+            lambda: self.show_speech(AUTOSTART_GREETING if autostart else MANUAL_GREETING, 4500, ambient=True))
         self.focus_timer = QTimer(self)
         self.focus_timer.setInterval(300)
         self.focus_timer.timeout.connect(self.check_focus)
@@ -799,7 +804,7 @@ class DesktopPet(QWidget):
     def save_data(self):
         self.settle_work()
         data = {
-            'version': 2,
+            'version': 3,
             'satiety': round(self.satiety, 2),
             'candy_count': self.candy_count,
             'burger_count': self.burger_count,
@@ -811,6 +816,9 @@ class DesktopPet(QWidget):
             'work_total_seconds': self.work_total_seconds,
             'reward_marks': self.reward_marks,
             'affection': self.affection,
+            'pet_affection_date': self.pet_affection_date,
+            'pet_affection_today': self.pet_affection_today,
+            'work_affection_claimed': self.work_affection_claimed,
             'quiet_mode': self.quiet_mode,
             'auto_chase': self.auto_chase,
             'auto_nap': self.auto_nap,
@@ -831,7 +839,8 @@ class DesktopPet(QWidget):
             logging.warning('Save recovery: %s', error)
         for key in ('satiety', 'candy_count', 'burger_count', 'cake_count', 'todo_list',
                     'affection', 'quiet_mode', 'auto_chase', 'auto_nap', 'last_snack_date', 'working', 'work_session_seconds',
-                    'work_total_seconds', 'reward_marks'):
+                    'work_total_seconds', 'reward_marks', 'pet_affection_date', 'pet_affection_today',
+                    'work_affection_claimed'):
             setattr(self, key, data[key])
         self.next_stretch_seconds = (int(self.work_session_seconds // 2700) + 1) * 2700
         self.work_start_time = time.time() if self.working else 0
@@ -842,14 +851,15 @@ class DesktopPet(QWidget):
             self.label.setFixedSize(self.pet_size)
             self.load_frames()
         self.todo_panel.refresh_items()
+        self.settle_work()
 
 
-    def force_show(self):
+    def force_show(self, *, activate=True):
         logging.info('force_show called')
         self.show()
         self.showNormal()
         self.raise_()
-        if not self.focus_timer.isActive():
+        if activate and not self.focus_timer.isActive():
             self.activateWindow()
         point = self.clamp_position(self.pos())
         self.move(point)
@@ -1160,7 +1170,9 @@ class DesktopPet(QWidget):
 
     def random_speech(self):
         if self.state not in ('drag', 'hungry', 'sleeping', 'petted') and self.satiety > 0:
-            text = random.choice(IDLE_SPEECHES)
+            tier = affection_tier(self.affection)
+            lines = AFFECTION_LINES[tier] if random.random() < tier * 0.06 else IDLE_SPEECHES
+            text = random.choice(lines)
             self.show_speech(text, 3500, ambient=True)
         self.schedule_next_speech()
 
@@ -1234,8 +1246,14 @@ class DesktopPet(QWidget):
         if self.state == 'playful_bounce':
             self.pos_f[1] = float(self.playful_bounce_base_y)
             self.move(int(self.pos_f[0]), int(self.pos_f[1]))
-        if now - self.last_pet_time >= 5:
-            self.affection = min(100, self.affection + 1)
+        today = datetime.now().date().isoformat()
+        if self.pet_affection_date != today:
+            self.pet_affection_date = today
+            self.pet_affection_today = 0
+        earned = self.pet_affection_today < DAILY_PET_AFFECTION_LIMIT and now - self.last_pet_time >= 5
+        if earned:
+            self.affection += 1
+            self.pet_affection_today += 1
             self.last_pet_time = now
         self.state = 'petted'
         self.vx = self.vy = 0.0
@@ -1243,9 +1261,9 @@ class DesktopPet(QWidget):
         self.heart_until = now + 1.6
         self.frame_index = 0
         self.update_image()
-        lines = [line for level, unlocked in AFFECTION_LINES.items() if self.affection >= level for line in unlocked]
-        self.show_speech(random.choice(lines), 2200)
-        self.save_data()
+        self.show_speech(random.choice(AFFECTION_LINES[affection_tier(self.affection)]), 2400)
+        if earned:
+            self.save_data()
         self.refresh_panel()
 
     def toggle_quiet(self):
@@ -1611,6 +1629,12 @@ class DesktopPet(QWidget):
         if self.working and elapsed <= 60:
             self.work_session_seconds += elapsed
             self.work_total_seconds += elapsed
+        due = int(self.work_total_seconds // WORK_AFFECTION_INTERVAL)
+        earned = max(0, due - self.work_affection_claimed)
+        if earned:
+            self.work_affection_claimed += earned
+            self.affection += earned
+        return earned
 
     def get_work_elapsed(self):
         extra = max(0, time.monotonic() - self.work_last_tick) if self.working else 0
@@ -1630,7 +1654,8 @@ class DesktopPet(QWidget):
         return bool(earned)
 
     def refresh_panel(self):
-        self.setToolTip(f'葡萄冻冻 · 亲密度 {int(self.affection)}\n单击玩耍 · 双击摸头 · 按住拖动搬家 · 右键菜单')
+        self.setToolTip(f'葡萄冻冻 · 亲密度 {self.affection} · {affection_tier(self.affection)} 阶\n'
+                        '单击玩耍 · 双击摸头 · 按住拖动搬家 · 右键菜单')
         if self.panel_visible and self.working:
             if not self.panel_refresh_timer.isActive():
                 self.panel_refresh_timer.start(1000)
@@ -1731,7 +1756,7 @@ class DesktopPet(QWidget):
         self.last_satiety_check = now
         rate = 2 if self.state in ('sleeping', 'playful_sleep', 'pajamas', 'focus_sleep') else SATIETY_DECAY_PER_HOUR
         self.satiety = max(0, self.satiety - min(20, elapsed * rate / 3600))
-        self.settle_work()
+        earned_affection = self.settle_work()
         earned = False
         if self.working:
             earned = self.grant_work_rewards()
@@ -1743,7 +1768,7 @@ class DesktopPet(QWidget):
                         self.start_stretch()
         elif self.satiety <= 0 and not self.focus_timer.isActive() and self.state in ('idle', 'pajamas'):
             self.start_hungry()
-        if earned or now - self.last_checkpoint >= 60:
+        if earned or earned_affection or now - self.last_checkpoint >= 60:
             self.save_data()
         self.refresh_panel()
 
@@ -1897,6 +1922,36 @@ class DesktopPet(QWidget):
         setattr(self, name, not getattr(self, name))
         self.save_data()
 
+    def startup_enabled(self):
+        try:
+            return startup_windows.registered_command() is not None
+        except OSError as error:
+            logging.warning('Could not read startup setting: %s', error)
+            return False
+
+    def toggle_startup(self):
+        try:
+            enabled = startup_windows.registered_command() is None
+            startup_windows.set_enabled(enabled)
+        except OSError as error:
+            logging.warning('Could not change startup setting: %s', error)
+            self.show_speech('开机自启动设置失败，请稍后重试。', 3500)
+            return
+        self.show_speech('下次登录 Windows，我就在这里等你～' if enabled else '已关闭开机自启动。', 3500)
+
+    def show_affection_help(self):
+        tier = affection_tier(self.affection)
+        next_level = (f'下一阶还差 {AFFECTION_THRESHOLDS[tier] - self.affection} 点。'
+                      if tier < len(AFFECTION_THRESHOLDS) else '已解锁全部十阶台词。')
+        today = datetime.now().date().isoformat()
+        earned = self.pet_affection_today if self.pet_affection_date == today else 0
+        thresholds = '、'.join(map(str, AFFECTION_THRESHOLDS))
+        QMessageBox.information(self, '亲密度说明',
+            f'当前 {self.affection} 点 · 第 {tier} 阶。{next_level}\n\n'
+            f'摸头每日最多 +{DAILY_PET_AFFECTION_LIMIT}，今天已获得 {earned} 点。\n'
+            '工作模式每累计 2 小时 +1，跨次保留，没有每日上限。\n\n'
+            f'十阶门槛：{thresholds}。\n阶数越高，解锁的台词越亲密。')
+
     def create_menu(self, *, from_tray=False):
         menu = QMenu(self)
 
@@ -1926,7 +1981,13 @@ class DesktopPet(QWidget):
         interaction = menu.addMenu('互动')
         add(interaction, '摸摸头 ♥', self.pet_head, enabled=can_interrupt)
         add(interaction, '领取今日零食', self.daily_snack)
-        add(interaction, '亲密度说明', lambda: self.show_speech(AFFECTION_HELP, 7000))
+        interaction.addSeparator()
+        add(interaction, '追鼠标', self.start_playful_chase, enabled=can_interrupt)
+        add(interaction, lambda: '叫醒她' if self.state == 'sleeping' else '睡一会儿',
+            self.toggle_nap, enabled=can_interrupt)
+        add(interaction, '伸懒腰', self.start_stretch, enabled=can_interrupt)
+        add(interaction, '跳跃', self.start_jump, enabled=can_interrupt)
+        add(interaction, '跳舞', self.start_dance, enabled=can_interrupt)
         menu.addSeparator()
         add(menu, lambda: '结束工作' if self.working else '开始工作', self.toggle_work)
         add(menu, lambda: '关闭状态栏' if self.panel_visible else '打开状态栏', self.toggle_panel)
@@ -1937,14 +1998,10 @@ class DesktopPet(QWidget):
         add(settings, '安静陪伴', self.toggle_quiet, enabled=can_interrupt, checked=lambda: self.quiet_mode)
         add(settings, '自动追鼠标', lambda: self.toggle_auto_setting('auto_chase'), checked=lambda: self.auto_chase)
         add(settings, '自动小睡', lambda: self.toggle_auto_setting('auto_nap'), checked=lambda: self.auto_nap)
+        add(settings, '开机自启动', self.toggle_startup, enabled=lambda: sys.platform == 'win32',
+            checked=self.startup_enabled)
         settings.addSeparator()
-        add(settings, '追鼠标', self.start_playful_chase, enabled=can_interrupt)
-        add(settings, lambda: '叫醒她' if self.state == 'sleeping' else '睡一会儿',
-            self.toggle_nap, enabled=can_interrupt)
-        motions = settings.addMenu('其他动作')
-        add(motions, '伸懒腰', self.start_stretch, enabled=can_interrupt)
-        add(motions, '跳跃', self.start_jump, enabled=can_interrupt)
-        add(motions, '跳舞', self.start_dance, enabled=can_interrupt)
+        add(settings, '亲密度说明', self.show_affection_help)
         add(menu, '退出', self.close)
         return menu
 
@@ -2065,7 +2122,8 @@ def main():
         pixmap = QPixmap(resource_path('assets/processed/idle_0.png'))
         sys.exit(1 if pixmap.isNull() else 0)
 
-    logging.info('Application starting')
+    autostart = startup_windows.STARTUP_ARGUMENT in sys.argv[1:]
+    logging.info('Application starting (autostart=%s)', autostart)
 
     app = QApplication(sys.argv)
     # When the pet window closes, the whole application must quit.
@@ -2076,12 +2134,13 @@ def main():
     probe = QLocalSocket()
     probe.connectToServer(SINGLETON_NAME)
     if probe.waitForConnected(500):
-        probe.write(b'SHOW')
-        probe.flush()
-        probe.waitForBytesWritten(500)
+        if not autostart:
+            probe.write(b'SHOW')
+            probe.flush()
+            probe.waitForBytesWritten(500)
         probe.disconnectFromServer()
         probe.deleteLater()
-        logging.info('Existing instance found; signaled it to show and exiting')
+        logging.info('Existing instance found; exiting duplicate launch')
         sys.exit(0)
     probe.deleteLater()
 
@@ -2092,14 +2151,23 @@ def main():
         logging.error(f'Unable to claim singleton: {local_server.errorString()}')
         sys.exit(1)
 
-    create_desktop_shortcut()
+    if not autostart:
+        create_desktop_shortcut()
+        try:
+            registered = startup_windows.registered_command()
+            if registered and registered != startup_windows.startup_command():
+                startup_windows.set_enabled(True)
+        except OSError as error:
+            logging.warning('Could not update startup path: %s', error)
 
-    pet = DesktopPet()
+    pet = DesktopPet(autostart=autostart)
     local_server.newConnection.connect(lambda: handle_new_connection(local_server, pet))
     # Keep a reference so the server is not garbage collected.
     app.setProperty('singletonServer', local_server)
 
-    pet.force_show()
+    if autostart:
+        pet.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    pet.force_show(activate=not autostart)
     logging.info('Pet window shown')
 
     if QSystemTrayIcon.isSystemTrayAvailable():

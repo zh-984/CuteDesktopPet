@@ -9,6 +9,13 @@ from pathlib import Path
 
 
 REWARD_INTERVALS = {'candy': 15 * 60, 'burger': 2 * 3600, 'cake': 5 * 3600}
+AFFECTION_THRESHOLDS = (20, 50, 100, 200, 400, 600, 1000, 1500, 2000, 4000)
+DAILY_PET_AFFECTION_LIMIT = 10
+WORK_AFFECTION_INTERVAL = 2 * 3600
+
+
+def affection_tier(points):
+    return sum(points >= threshold for threshold in AFFECTION_THRESHOLDS)
 
 
 def number(value, default=0.0, minimum=0.0, maximum=float('inf')):
@@ -62,7 +69,10 @@ def normalize_data(data, now):
         **{f'{key}_count': int(number(data.get(f'{key}_count'), maximum=1000000))
            for key in REWARD_INTERVALS},
         'todo_list': todos,
-        'affection': number(data.get('affection'), maximum=100),
+        'affection': int(number(data.get('affection'))),
+        'pet_affection_date': data.get('pet_affection_date') if isinstance(data.get('pet_affection_date'), str) else '',
+        'pet_affection_today': int(number(data.get('pet_affection_today'), maximum=DAILY_PET_AFFECTION_LIMIT)),
+        'work_affection_claimed': int(number(data.get('work_affection_claimed'))),
         'quiet_mode': data.get('quiet_mode') is True,
         'auto_chase': data.get('auto_chase') is not False,
         'auto_nap': data.get('auto_nap') is not False,
@@ -122,7 +132,7 @@ def write_save(path, data):
 
 def behavior_weights(satiety, affection, working, recent):
     """Choose which actions are eligible and how likely they are to play first."""
-    weights = {'look': 2, 'wave': 1 + affection / 20, 'sleep': 1,
+    weights = {'look': 2, 'wave': 1 + affection_tier(affection) * 0.5, 'sleep': 1,
                'dance': 1, 'bounce': 1, 'chase': 1, 'wander': 4, 'stretch': 2}
     if satiety < 25:
         weights.update(sleep=5, dance=0, bounce=0, chase=0, wander=1)
