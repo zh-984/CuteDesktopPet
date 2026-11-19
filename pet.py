@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QDateTime, QLocale, QStandardPaths
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QSize, QRect, QDateTime, QLocale, QStandardPaths
 from PyQt6.QtGui import (QPixmap, QTransform, QCursor, QPainter, QColor, QFont,
                          QPainterPath, QIcon, QPalette, QTextCharFormat)
 
@@ -203,43 +203,52 @@ class PetMenu(QMenu):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.closing_action = None
+        self.pressed_submenu = None
         self.collapsed_action = None
+        self.installEventFilter(self)
 
-    def mousePressEvent(self, event):
-        action = self.actionAt(event.position().toPoint())
-        if event.button() == Qt.MouseButton.LeftButton:
+    def add_toggleable_submenu(self, title):
+        submenu = self.addMenu(title)
+        submenu.installEventFilter(self)
+        return submenu
+
+    def eventFilter(self, receiver, event):
+        kind = event.type()
+        mouse = QEvent.Type
+        if kind not in (mouse.MouseMove, mouse.MouseButtonPress,
+                        mouse.MouseButtonDblClick, mouse.MouseButtonRelease):
+            return super().eventFilter(receiver, event)
+
+        # The open child can own the mouse grab and receive both events for
+        # a click whose screen position is over a row in the parent menu.
+        point = event.globalPosition().toPoint()
+        inside_child = receiver is not self and receiver.rect().contains(receiver.mapFromGlobal(point))
+        action = None if inside_child else self.actionAt(self.mapFromGlobal(point))
+        if kind == mouse.MouseMove:
+            if self.collapsed_action and action == self.collapsed_action:
+                return True
             self.collapsed_action = None
-            if action and action.menu() and action.menu().isVisible():
-                self.closing_action = action
-                event.accept()
-                return
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.closing_action:
-            action, self.closing_action = self.closing_action, None
-            if self.actionAt(event.position().toPoint()) == action:
-                action.menu().hide()
-                self.setActiveAction(None)
-                self.collapsed_action = action
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.collapsed_action and self.actionAt(event.position().toPoint()) == self.collapsed_action:
-            event.accept()
-            return
-        self.collapsed_action = None
-        super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        self.collapsed_action = None
-        super().leaveEvent(event)
+        elif event.button() == Qt.MouseButton.LeftButton:
+            if kind in (mouse.MouseButtonPress, mouse.MouseButtonDblClick):
+                self.collapsed_action = None
+                if action and action.isEnabled() and action.menu():
+                    self.pressed_submenu = action
+                    return True
+            elif self.pressed_submenu:
+                pressed, self.pressed_submenu = self.pressed_submenu, None
+                if action == pressed:
+                    was_visible = pressed.menu().isVisible()
+                    self.setActiveAction(None)
+                    if was_visible:
+                        pressed.menu().hide()
+                        self.collapsed_action = pressed
+                    else:
+                        self.setActiveAction(pressed)
+                return True
+        return super().eventFilter(receiver, event)
 
     def hideEvent(self, event):
-        self.closing_action = self.collapsed_action = None
+        self.pressed_submenu = self.collapsed_action = None
         super().hideEvent(event)
 
 
@@ -846,7 +855,7 @@ class DesktopPet(QWidget):
         self.eat_timer = 0
         self.playful_sleep_timer = 0
         self.playful_wave_timer = 0
-        self.playful_bounce_timer = 0
+        self.bounce_started_at = 0.0
         self.playful_bounce_base_y = 0
         self.last_night_speech_time = 0
         self.stretch_step = 0
@@ -896,6 +905,10 @@ class DesktopPet(QWidget):
 
         self.panel_refresh_timer = QTimer(self)
         self.panel_refresh_timer.timeout.connect(self.refresh_panel)
+        self.resize_timer = QTimer(self)
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.setInterval(100)
+        self.resize_timer.timeout.connect(self.finish_resize)
         self.click_timer = QTimer(self)
         self.click_timer.setSingleShot(True)
         self.click_timer.timeout.connect(self.play_with_pet)
@@ -1203,7 +1216,7 @@ class DesktopPet(QWidget):
             self.stretch_timer.stop()
         moving = self.state in ('run', 'walk', 'chase', 'jump', 'fall', 'playful_bounce')
         animated = self.state in ('run', 'walk', 'chase', 'focus_knock', 'dance', 'playful_look', 'playful_eat',
-                                  'eat', 'playful_sleep', 'playful_wave', 'playful_bounce', 'petted')
+                                  'eat', 'playful_sleep', 'playful_wave', 'petted')
         for timer, active, interval, clock_attr in (
                 (self.physics_timer, moving, 16, 'physics_last_tick'),
                 (self.anim_timer, animated, 130, 'anim_last_tick')):
@@ -1258,14 +1271,6 @@ class DesktopPet(QWidget):
             self.playful_wave_timer += elapsed
             self.facing_right = int(self.playful_wave_timer // 520) % 2 == 0
             if self.playful_wave_timer >= 2600:
-                self.start_idle()
-                return
-        elif self.state == 'playful_bounce':
-            self.frame_index = (self.frame_index + 1) % len(self.pixmaps['jump'])
-            self.playful_bounce_timer += elapsed
-            if self.playful_bounce_timer >= 3000:
-                self.pos_f[1] = float(self.playful_bounce_base_y)
-                self.ground_y = self.playful_bounce_base_y
                 self.start_idle()
                 return
         elif self.state == 'petted':
@@ -1693,7 +1698,7 @@ class DesktopPet(QWidget):
         self.vx = 0.0
         self.vy = 0.0
         self.frame_index = 0
-        self.playful_bounce_timer = 0
+        self.bounce_started_at = time.monotonic()
         self.playful_bounce_base_y = int(self.pos_f[1])
         self.update_image()
 
@@ -1904,7 +1909,14 @@ class DesktopPet(QWidget):
         # Preserve existing motion tuning while accounting for delayed callbacks.
         steps = dt / 0.016
         if self.state == 'playful_bounce':
-            phase = self.playful_bounce_timer / 1000.0
+            phase = max(0.0, now - self.bounce_started_at)
+            if phase >= 3:
+                self.pos_f[1] = float(self.playful_bounce_base_y)
+                self.ground_y = self.playful_bounce_base_y
+                self.move(round(self.pos_f[0]), self.ground_y)
+                self.start_idle()
+                self.update_panel_position()
+                return
             hop = 15 * abs(math.sin(phase * math.pi * 2))
             self.pos_f[1] = self.playful_bounce_base_y - hop
         elif self.state in ('jump', 'fall'):
@@ -1937,8 +1949,9 @@ class DesktopPet(QWidget):
             self.pos_f[0] = float(point.x())
         if point.y() != int(self.pos_f[1]):
             self.pos_f[1] = float(point.y())
-        self.move(point)
-        self.update_panel_position()
+        if point != self.pos():
+            self.move(point)
+            self.update_panel_position()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2098,7 +2111,7 @@ class DesktopPet(QWidget):
 
         if from_tray:
             add(menu, '显示桌宠', self.force_show)
-        interaction = menu.addMenu('互动')
+        interaction = menu.add_toggleable_submenu('互动')
         add(interaction, '摸摸头 ♥', self.pet_head, enabled=can_interrupt)
         add(interaction, '领取今日零食', self.daily_snack)
         interaction.addSeparator()
@@ -2114,7 +2127,7 @@ class DesktopPet(QWidget):
         add(menu, lambda: '关闭待办清单' if self.todo_panel_visible else '打开待办清单', self.toggle_todo_panel)
         add(menu, lambda: '结束专注模式' if self.focus_timer.isActive() else '开启专注模式', self.toggle_focus)
         menu.addSeparator()
-        settings = menu.addMenu('设置')
+        settings = menu.add_toggleable_submenu('设置')
         add(settings, '安静陪伴', self.toggle_quiet, enabled=can_interrupt, checked=lambda: self.quiet_mode)
         add(settings, '自动追鼠标', lambda: self.toggle_auto_setting('auto_chase'), checked=lambda: self.auto_chase)
         add(settings, '自动小睡', lambda: self.toggle_auto_setting('auto_nap'), checked=lambda: self.auto_nap)
@@ -2149,7 +2162,12 @@ class DesktopPet(QWidget):
         self.pet_size = QSize(new_w, new_w)
         self.setFixedSize(self.pet_size)
         self.label.setFixedSize(self.pet_size)
+        self.label.setScaledContents(True)
+        self.resize_timer.start()
+
+    def finish_resize(self):
         self.load_frames()
+        self.label.setScaledContents(False)
         self.update_image()
         self.on_screens_changed()
         self.save_data()

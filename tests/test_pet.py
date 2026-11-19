@@ -12,7 +12,7 @@ from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 from PyQt6.QtCore import QDate, QDateTime, QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QCursor, QMouseEvent
+from PyQt6.QtGui import QCursor, QMouseEvent, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QComboBox, QTableView
 
@@ -218,6 +218,12 @@ class PetTests(unittest.TestCase):
                 QTest.qWait(50)
             self.assertEqual(submenu.isVisible(), visible)
 
+        def move_over(menu, position):
+            event = QMouseEvent(QEvent.Type.MouseMove, QPointF(position),
+                                QPointF(menu.mapToGlobal(position)), Qt.MouseButton.NoButton,
+                                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+            self.app.sendEvent(menu, event)
+
         menu = self.p.create_menu()
         self.addCleanup(menu.close)
         menu.popup(QPoint(90, 90))
@@ -230,13 +236,69 @@ class PetTests(unittest.TestCase):
             QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=pos)
             self.assertFalse(action.menu().isVisible())
             self.assertTrue(menu.isVisible())
-            QTest.mouseMove(menu, pos + QPoint(1, 0))
+            move_over(menu, pos + QPoint(1, 0))
             self.assertFalse(action.menu().isVisible())
             QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=pos)
             wait_for_visibility(action.menu(), True)
             other = next(a for a in menu.actions() if a.text() == '开始工作')
-            QTest.mouseMove(menu, menu.actionGeometry(other).center())
+            move_over(menu, menu.actionGeometry(other).center())
             wait_for_visibility(action.menu(), False)
+
+    def test_open_submenu_can_receive_the_click_over_its_parent_row(self):
+        menu = self.p.create_menu()
+        self.addCleanup(menu.close)
+        menu.popup(QPoint(90, 90))
+        self.app.processEvents()
+        for name in ('设置', '互动'):
+            action = next(a for a in menu.actions() if a.text() == name)
+            menu.setActiveAction(action)
+            child = action.menu()
+            self.assertTrue(child.isVisible())
+            global_pos = QPointF(menu.mapToGlobal(menu.actionGeometry(action).center()))
+            local_pos = QPointF(child.mapFromGlobal(global_pos.toPoint()))
+            press = QEvent.Type.MouseButtonDblClick if name == '互动' else QEvent.Type.MouseButtonPress
+            for event_type, buttons in (
+                (press, Qt.MouseButton.LeftButton),
+                (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton),
+            ):
+                event = QMouseEvent(event_type, local_pos, global_pos, Qt.MouseButton.LeftButton,
+                                    buttons, Qt.KeyboardModifier.NoModifier)
+                self.app.sendEvent(child, event)
+            self.assertFalse(child.isVisible())
+            self.assertTrue(menu.isVisible())
+
+    def test_bounce_advances_on_physics_ticks_and_lands_at_start_height(self):
+        self.p.start_playful_bounce()
+        start = self.p.bounce_started_at
+        baseline = self.p.playful_bounce_base_y
+        self.assertFalse(self.p.anim_timer.isActive())
+        positions = []
+        for elapsed in (0.04, 0.08, 0.12):
+            with patch('pet.time.monotonic', return_value=start + elapsed):
+                self.p.update_physics()
+                positions.append(self.p.y())
+        self.assertGreater(positions[0], positions[1])
+        self.assertGreater(positions[1], positions[2])
+        with patch('pet.time.monotonic', return_value=start + 3.1):
+            self.p.update_physics()
+        self.assertEqual(self.p.y(), baseline)
+        self.assertFalse(self.p.physics_timer.isActive())
+
+    def test_wheel_burst_rebuilds_assets_and_saves_only_once(self):
+        origin = self.p.width()
+        with patch.object(self.p, 'load_frames', wraps=self.p.load_frames) as load, \
+             patch.object(self.p, 'save_data', wraps=self.p.save_data) as save:
+            for _ in range(3):
+                event = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(), QPoint(0, 120),
+                                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                    Qt.ScrollPhase.NoScrollPhase, False)
+                self.p.wheelEvent(event)
+            self.assertEqual(self.p.width(), origin + 30)
+            load.assert_not_called()
+            save.assert_not_called()
+            QTest.qWait(160)
+            load.assert_called_once()
+            save.assert_called_once()
 
     def test_menu_order_and_persisted_automatic_settings(self):
         menu = self.p.create_menu()
