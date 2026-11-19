@@ -12,12 +12,12 @@ from pet_core import (AFFECTION_THRESHOLDS, DAILY_PET_AFFECTION_LIMIT, REWARD_IN
                       WORK_AFFECTION_INTERVAL, affection_tier, behavior_weights, read_save, write_save)
 import startup_windows
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QLabel, QMenu, QMessageBox, QSystemTrayIcon, QCalendarWidget,
+    QApplication, QWidget, QLabel, QMenu, QMessageBox, QSystemTrayIcon, QCalendarWidget, QComboBox,
     QLineEdit, QDateTimeEdit, QPushButton, QCheckBox, QScrollArea,
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QDateTime, QStandardPaths
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QRect, QDateTime, QLocale, QStandardPaths
 from PyQt6.QtGui import (QPixmap, QTransform, QCursor, QPainter, QColor, QFont,
                          QPainterPath, QIcon, QPalette, QTextCharFormat)
 
@@ -87,10 +87,78 @@ def resource_path(rel):
     return os.path.join(base, rel)
 
 
-def todo_calendar():
-    calendar = QCalendarWidget()
+class TodoCalendar(QCalendarWidget):
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        if hasattr(self, 'navigation'):
+            bar_size = self.navigation.sizeHint()
+            size.setWidth(max(size.width(), bar_size.width()))
+            size.setHeight(size.height() + bar_size.height())
+        return size
+
+
+def todo_calendar(minimum_date, maximum_date):
+    calendar = TodoCalendar()
+    calendar.setDateRange(minimum_date, maximum_date)
+    calendar.setNavigationBarVisible(False)
     calendar.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
     calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+
+    navigation = QWidget(calendar)
+    calendar.navigation = navigation
+    navigation.setObjectName('todoCalendarNavigation')
+    row = QHBoxLayout(navigation)
+    row.setContentsMargins(4, 2, 4, 2)
+    row.setSpacing(4)
+    previous = QPushButton('‹', navigation)
+    following = QPushButton('›', navigation)
+    previous.setToolTip('上个月')
+    following.setToolTip('下个月')
+    for button in (previous, following):
+        button.setFixedWidth(26)
+    previous.clicked.connect(calendar.showPreviousMonth)
+    following.clicked.connect(calendar.showNextMonth)
+
+    month = QComboBox(navigation)
+    month.setObjectName('todoCalendarMonth')
+    month.setToolTip('选择月份')
+    month.setMinimumWidth(72)
+    month.addItems([calendar.locale().standaloneMonthName(i, QLocale.FormatType.LongFormat)
+                    for i in range(1, 13)])
+    year = QComboBox(navigation)
+    year.setObjectName('todoCalendarYear')
+    year.setToolTip('选择年份')
+    year.setMinimumWidth(60)
+    first_year, last_year = minimum_date.year(), maximum_date.year()
+    year.addItems([str(value) for value in range(first_year, last_year + 1)])
+    for selector in (month, year):
+        selector.setMaxVisibleItems(12)
+        selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow)
+
+    def update_navigation(shown_year, shown_month):
+        month.setCurrentIndex(shown_month - 1)
+        year.setCurrentIndex(shown_year - first_year)
+        previous.setEnabled((shown_year, shown_month) > (first_year, minimum_date.month()))
+        following.setEnabled((shown_year, shown_month) < (last_year, maximum_date.month()))
+
+    def go_to(selected_year, selected_month):
+        earliest = minimum_date.month() if selected_year == first_year else 1
+        latest = maximum_date.month() if selected_year == last_year else 12
+        calendar.setCurrentPage(selected_year, max(earliest, min(selected_month, latest)))
+        update_navigation(calendar.yearShown(), calendar.monthShown())
+
+    month.activated.connect(lambda index: go_to(calendar.yearShown(), index + 1))
+    year.activated.connect(lambda index: go_to(first_year + index, calendar.monthShown()))
+    calendar.currentPageChanged.connect(update_navigation)
+    update_navigation(calendar.yearShown(), calendar.monthShown())
+    row.addWidget(previous)
+    row.addStretch()
+    row.addWidget(month)
+    row.addWidget(year)
+    row.addStretch()
+    row.addWidget(following)
+    calendar.layout().insertWidget(0, navigation)
+
     palette = calendar.palette()
     for role, color in {
         QPalette.ColorRole.Window: '#f4effc', QPalette.ColorRole.Base: '#ffffff',
@@ -111,16 +179,68 @@ def todo_calendar():
     for day in (Qt.DayOfWeek.Saturday, Qt.DayOfWeek.Sunday):
         calendar.setWeekdayTextFormat(day, weekend)
     calendar.setStyleSheet('''
-        QCalendarWidget QWidget#qt_calendar_navigationbar { background: #e6daf7; }
-        QCalendarWidget QToolButton { color: #392752; background: #e6daf7; }
-        QCalendarWidget QToolButton:hover { background: #d6c4ee; }
-        QCalendarWidget QSpinBox { color: #392752; background: #ffffff; }
+        QWidget#todoCalendarNavigation { background: #e6daf7; }
+        QWidget#todoCalendarNavigation QPushButton, QWidget#todoCalendarNavigation QComboBox {
+            color: #392752; background: #e6daf7; border: 0; border-radius: 4px; padding: 3px 7px;
+        }
+        QWidget#todoCalendarNavigation QPushButton:hover, QWidget#todoCalendarNavigation QComboBox:hover {
+            background: #d6c4ee;
+        }
+        QWidget#todoCalendarNavigation QPushButton:disabled { color: #847799; }
+        QWidget#todoCalendarNavigation QComboBox { combobox-popup: 0; }
+        QWidget#todoCalendarNavigation QComboBox::drop-down { width: 0; border: 0; }
+        QWidget#todoCalendarNavigation QComboBox::down-arrow { image: none; width: 0; height: 0; }
         QCalendarWidget QAbstractItemView {
             color: #4a3a6a; background: #ffffff;
             selection-color: #ffffff; selection-background-color: #7444aa;
         }
     ''')
     return calendar
+
+
+class PetMenu(QMenu):
+    """Keep Qt's hover behavior and let a click close the open submenu."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.closing_action = None
+        self.collapsed_action = None
+
+    def mousePressEvent(self, event):
+        action = self.actionAt(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.collapsed_action = None
+            if action and action.menu() and action.menu().isVisible():
+                self.closing_action = action
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.closing_action:
+            action, self.closing_action = self.closing_action, None
+            if self.actionAt(event.position().toPoint()) == action:
+                action.menu().hide()
+                self.setActiveAction(None)
+                self.collapsed_action = action
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.collapsed_action and self.actionAt(event.position().toPoint()) == self.collapsed_action:
+            event.accept()
+            return
+        self.collapsed_action = None
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.collapsed_action = None
+        super().leaveEvent(event)
+
+    def hideEvent(self, event):
+        self.closing_action = self.collapsed_action = None
+        super().hideEvent(event)
 
 
 class SpeechBubble(QWidget):
@@ -302,7 +422,7 @@ class TodoPanel(QWidget):
         self.time_edit.setDateTime(QDateTime.currentDateTime().addSecs(3600))
         self.time_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
         self.time_edit.setCalendarPopup(True)
-        self.time_edit.setCalendarWidget(todo_calendar())
+        self.time_edit.setCalendarWidget(todo_calendar(self.time_edit.minimumDate(), self.time_edit.maximumDate()))
         self.time_edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.time_edit.setStyleSheet("""
             QDateTimeEdit {
@@ -1953,7 +2073,7 @@ class DesktopPet(QWidget):
             f'十阶门槛：{thresholds}。\n阶数越高，解锁的台词越亲密。')
 
     def create_menu(self, *, from_tray=False):
-        menu = QMenu(self)
+        menu = PetMenu(self)
 
         def add(parent, label, callback, *, enabled=None, checked=None):
             action = parent.addAction(label() if callable(label) else label)

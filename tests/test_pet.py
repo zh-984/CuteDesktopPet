@@ -14,7 +14,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 from PyQt6.QtCore import QDate, QDateTime, QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QCursor, QMouseEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QComboBox, QTableView
 
 import pet
 import startup_windows
@@ -184,6 +184,59 @@ class PetTests(unittest.TestCase):
         calendar.activated.emit(QDate(2027, 1, 1))
         self.assertEqual(edit.date(), QDate(2027, 1, 1))
         self.assertIn('2027-01-01', edit.text())
+
+    def test_calendar_header_text_opens_month_and_year_lists(self):
+        panel = self.p.todo_panel
+        edit = panel.time_edit
+        edit.setDate(QDate(2026, 11, 19))
+        panel.show()
+        QTest.mouseClick(edit, Qt.MouseButton.LeftButton, pos=QPoint(edit.width() - 6, edit.height() // 2))
+        calendar = edit.calendarWidget()
+        self.assertTrue(calendar.isVisible())
+        days = calendar.findChild(QTableView)
+        last_row = days.model().index(days.model().rowCount() - 1, 0)
+        self.assertTrue(days.viewport().rect().contains(days.visualRect(last_row)))
+        month = calendar.findChild(QComboBox, 'todoCalendarMonth')
+        year = calendar.findChild(QComboBox, 'todoCalendarYear')
+        for control in (month, year):
+            QTest.mouseClick(control, Qt.MouseButton.LeftButton, pos=control.rect().center())
+            self.assertTrue(control.view().isVisible())
+            QTest.keyClick(control.view(), Qt.Key.Key_Down)
+            QTest.keyClick(control.view(), Qt.Key.Key_Return)
+            self.assertTrue(calendar.isVisible())
+        self.assertEqual((calendar.yearShown(), calendar.monthShown()), (2027, 12))
+        self.assertEqual(edit.date(), QDate(2026, 11, 19))
+        calendar.setSelectedDate(QDate(2027, 12, 4))
+        calendar.activated.emit(calendar.selectedDate())
+        self.assertEqual(edit.date(), QDate(2027, 12, 4))
+
+    def test_clicking_the_same_submenu_toggles_without_closing_root(self):
+        def wait_for_visibility(submenu, visible):
+            for _ in range(20):
+                if submenu.isVisible() == visible:
+                    break
+                QTest.qWait(50)
+            self.assertEqual(submenu.isVisible(), visible)
+
+        menu = self.p.create_menu()
+        self.addCleanup(menu.close)
+        menu.popup(QPoint(90, 90))
+        self.app.processEvents()
+        for name in ('互动', '设置'):
+            action = next(a for a in menu.actions() if a.text() == name)
+            pos = menu.actionGeometry(action).center()
+            QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=pos)
+            wait_for_visibility(action.menu(), True)
+            QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=pos)
+            self.assertFalse(action.menu().isVisible())
+            self.assertTrue(menu.isVisible())
+            QTest.mouseMove(menu, pos + QPoint(1, 0))
+            self.assertFalse(action.menu().isVisible())
+            QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=pos)
+            wait_for_visibility(action.menu(), True)
+            other = next(a for a in menu.actions() if a.text() == '开始工作')
+            QTest.mouseMove(menu, menu.actionGeometry(other).center())
+            wait_for_visibility(action.menu(), False)
 
     def test_menu_order_and_persisted_automatic_settings(self):
         menu = self.p.create_menu()
