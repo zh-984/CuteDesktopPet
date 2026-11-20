@@ -7,7 +7,9 @@ import math
 import uuid
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from focus_windows import foreground_window, window_monitor, window_pid
+from desktop_layout import DesktopLayout, Display, display_at, match_windows_display
+from focus_windows import (foreground_window, move_window_anchor, physical_cursor, physical_displays,
+                           physical_window_rect, window_monitor, window_pid)
 from pet_core import (AFFECTION_THRESHOLDS, DAILY_PET_AFFECTION_LIMIT, REWARD_INTERVALS,
                       WORK_AFFECTION_INTERVAL, affection_tier, behavior_weights, read_save, write_save)
 import startup_windows
@@ -17,7 +19,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFrame, QAbstractSpinBox
 )
 
-from PyQt6.QtCore import (Qt, QEvent, QTimer, QPoint, QSize, QRect, QDateTime, QLocale,
+from PyQt6.QtCore import (Qt, QEvent, QTimer, QPoint, QPointF, QSize, QRect, QDateTime, QLocale,
                           QStandardPaths, QAbstractListModel, QModelIndex)
 from PyQt6.QtGui import (QPixmap, QTransform, QCursor, QPainter, QColor, QFont,
                          QPainterPath, QIcon, QPalette, QTextCharFormat)
@@ -817,14 +819,11 @@ class DesktopPet(QWidget):
         self.pet_size = QSize(200, 200)
         self.setFixedSize(self.pet_size)
 
-        self.compute_screen_bounds()
-
         primary = QApplication.primaryScreen().availableGeometry()
         # A new companion sits near the taskbar; returning pets remember their spot.
         start_x = max(primary.left(), primary.right() - self.pet_size.width() - 48)
         start_y = max(primary.top(), primary.bottom() - self.pet_size.height() + 1)
         self.move(start_x, start_y)
-        self.saved_start = QPoint(start_x, start_y)
 
         self.label = QLabel(self)
         self.label.setFixedSize(self.pet_size)
@@ -846,6 +845,7 @@ class DesktopPet(QWidget):
         self.frame_index = 0
         self.facing_right = True
         self.drag_offset = None
+        self.drag_anchor = None
         self.last_drag_pos = None
         self.press_pos = None
         self._double_click = False
@@ -868,6 +868,10 @@ class DesktopPet(QWidget):
         self.gravity = 0.8
         self.target_x = None
         self.walk_target = None
+        self.walk_anchor = None
+        self.desktop_layout = None
+        self.screens_by_device = {}
+        self.motion_screen = None
         self.walk_speed = 0.0
         self.chase_until = 0.0
         self.focus_target = None
@@ -951,8 +955,11 @@ class DesktopPet(QWidget):
         self.focus_timer.timeout.connect(self.check_focus)
 
         app = QApplication.instance()
-        app.screenAdded.connect(self.on_screens_changed)
-        app.screenRemoved.connect(self.on_screens_changed)
+        self.topology_timer = QTimer(self)
+        self.topology_timer.setSingleShot(True)
+        self.topology_timer.timeout.connect(self.on_screens_changed)
+        app.screenAdded.connect(self.schedule_screen_update)
+        app.screenRemoved.connect(self.schedule_screen_update)
         self.on_screens_changed()
 
         self.schedule_next_speech()
@@ -1016,41 +1023,41 @@ class DesktopPet(QWidget):
 
     def force_show(self, *, activate=True):
         logging.info('force_show called')
-        self.show()
-        self.showNormal()
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
         self.raise_()
         if activate and not self.focus_timer.isActive():
             self.activateWindow()
-        point = self.clamp_position(self.pos())
-        self.move(point)
-        self.pos_f = [float(point.x()), float(point.y())]
-        self.ground_y = point.y()
+        if self.state not in ('drag', 'walk', 'chase', 'run', 'jump', 'fall', 'playful_bounce'):
+            point = self.clamp_position(self.pos())
+            self.move(point)
+            self.pos_f = [float(point.x()), float(point.y())]
+            self.ground_y = point.y()
         logging.info(f'Window geometry: {self.geometry()}')
 
-    def compute_screen_bounds(self):
-        screens = QApplication.screens()
-        min_x = min(s.availableGeometry().left() for s in screens)
-        min_y = min(s.availableGeometry().top() for s in screens)
-        max_x = max(s.availableGeometry().right() for s in screens)
-        max_y = max(s.availableGeometry().bottom() for s in screens)
-        self.screen_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
-        logging.info(f'Virtual screen rect: {self.screen_rect}')
+    @staticmethod
+    def screen_for_point(point):
+        screen = QApplication.screenAt(point)
+        if screen is not None:
+            return screen
+        def distance(screen):
+            rect = screen.geometry()
+            dx = max(rect.left() - point.x(), 0, point.x() - rect.right())
+            dy = max(rect.top() - point.y(), 0, point.y() - rect.bottom())
+            return dx * dx + dy * dy
+        return min(QApplication.screens(), key=distance)
 
     def current_bounds(self):
-        center = self.geometry().center()
-        screen = QApplication.screenAt(center)
-        if screen is None:
-            screen = min(QApplication.screens(), key=lambda s:
-                         (s.availableGeometry().center() - center).manhattanLength())
+        screen = self.motion_screen if self.state in ('drag', 'walk', 'chase') else None
+        screen = screen or self.screen_for_point(self.geometry().center())
         return screen.availableGeometry()
 
     def clamp_position(self, point, size=None):
         size = size or self.pet_size
         center = point + QPoint(size.width() // 2, size.height() // 2)
-        screen = QApplication.screenAt(center)
-        if screen is None:
-            screen = min(QApplication.screens(), key=lambda s:
-                         (s.availableGeometry().center() - center).manhattanLength())
+        screen = self.screen_for_point(center)
         return self.clamp_to_bounds(point, screen.availableGeometry(), size)
 
     @staticmethod
@@ -1058,12 +1065,36 @@ class DesktopPet(QWidget):
         return QPoint(max(bounds.left(), min(point.x(), bounds.right() - size.width() + 1)),
                       max(bounds.top(), min(point.y(), bounds.bottom() - size.height() + 1)))
 
-    def on_screens_changed(self, *_):
-        self.compute_screen_bounds()
-        for screen in QApplication.screens():
+    def schedule_screen_update(self, *_):
+        # Invalidate references before the OS can dispose a removed screen.
+        self.motion_screen = None
+        self.screens_by_device.clear()
+        self.desktop_layout = self.walk_anchor = self.drag_anchor = None
+        self.topology_timer.start(75)
+
+    def on_screens_changed(self):
+        screens = QApplication.screens()
+        self.motion_screen = None
+        self.desktop_layout = None
+        self.screens_by_device = {}
+        self.walk_anchor = None
+        self.drag_anchor = None
+        if sys.platform == 'win32' and QApplication.platformName() == 'windows':
+            rects = physical_displays()
+            displays = []
+            for screen in screens:
+                device = match_windows_display(screen.geometry(), screen.devicePixelRatio(), rects)
+                if device is not None:
+                    self.screens_by_device[device] = screen
+                    displays.append(Display(device, screen.geometry(), QRect(*rects[device])))
+            if len(displays) == len(screens) and len(self.screens_by_device) == len(screens) and len(screens) > 1:
+                self.desktop_layout = DesktopLayout(displays)
+        for screen in screens:
             if screen not in getattr(self, '_watched_screens', []):
-                screen.availableGeometryChanged.connect(self.on_screens_changed)
-        self._watched_screens = QApplication.screens()
+                screen.availableGeometryChanged.connect(self.schedule_screen_update)
+                screen.geometryChanged.connect(self.schedule_screen_update)
+                screen.logicalDotsPerInchChanged.connect(self.schedule_screen_update)
+        self._watched_screens = screens
         point = self.clamp_position(self.pos())
         self.move(point)
         self.pos_f = [float(point.x()), float(point.y())]
@@ -1455,6 +1486,8 @@ class DesktopPet(QWidget):
         self.vy = 0.0
         self.target_x = None
         self.walk_target = None
+        self.walk_anchor = None
+        self.motion_screen = None
         self.frame_index = 0
         self.update_image()
 
@@ -1551,6 +1584,12 @@ class DesktopPet(QWidget):
         self.begin_walk(self.cursor_destination(), 'chase')
 
     def cursor_destination(self):
+        if self.desktop_layout:
+            cursor = physical_cursor()
+            if cursor:
+                native = QPointF(*cursor)
+                display = display_at(self.desktop_layout.displays.values(), native, physical=True)
+                return self.destination_at(display.to_logical(native).toPoint(), self.screens_by_device.get(display.name))
         return self.destination_at(QCursor.pos())
 
     def destination_at(self, point, screen=None):
@@ -1569,7 +1608,17 @@ class DesktopPet(QWidget):
         self.walk_target = target
         self.walk_speed = 0.0
         self.frame_index = 0
+        self.walk_anchor = None
+        if self.desktop_layout and self.isVisible():
+            rect = physical_window_rect(int(self.winId()))
+            if rect and rect[2] > 0 and rect[3] > 0:
+                x, y, width, height = rect
+                self.walk_anchor = QPointF(x + width / 2, y + height / 2)
         self.update_image()
+
+    def update_motion_screen(self, point):
+        display = display_at(self.desktop_layout.displays.values(), point, physical=True)
+        self.motion_screen = self.screens_by_device.get(display.name)
 
     def update_walk(self, now, dt):
         if self.state == 'chase':
@@ -1578,9 +1627,17 @@ class DesktopPet(QWidget):
                 return
             self.walk_target = self.cursor_destination()
         target = self.walk_target
-        dx, dy = target.x() - self.pos_f[0], target.y() - self.pos_f[1]
+        start = QPointF(*self.pos_f)
+        goal = waypoint = QPointF(target)
+        if self.walk_anchor is not None:
+            start = self.walk_anchor
+            center = QPointF(target) + QPointF(self.width() / 2, self.height() / 2)
+            display = display_at(self.desktop_layout.displays.values(), center, physical=False)
+            goal = display.to_physical(center)
+            waypoint = self.desktop_layout.next_waypoint(start, goal)
+        dx, dy = waypoint.x() - start.x(), waypoint.y() - start.y()
         distance = math.hypot(dx, dy)
-        if distance <= 2:
+        if distance <= 2 and waypoint == goal:
             self.pos_f = [float(target.x()), float(target.y())]
             self.move(target)
             self.ground_y = target.y()
@@ -1591,18 +1648,32 @@ class DesktopPet(QWidget):
                 self.start_idle()
             return
         max_speed = 840 if self.focus_target else 640 if self.state == 'chase' else 155
-        desired_speed = min(max_speed, max(45, distance * 6))
+        # Carry speed through the display boundary. Slow down at the final destination.
+        desired_speed = min(max_speed, max(45, distance * 6)) if waypoint == goal else max_speed
         self.walk_speed += (desired_speed - self.walk_speed) * min(1, dt * 12)
         step = min(distance, self.walk_speed * dt)
-        self.pos_f[0] += step * dx / distance
-        self.pos_f[1] += step * dy / distance
+        point_f = waypoint if distance <= 2 else start + QPointF(step * dx / distance, step * dy / distance)
         if abs(dx) > 6 and self.facing_right != (dx > 0):
             self.facing_right = dx > 0
             self.update_image()
-        point = QPoint(round(self.pos_f[0]), round(self.pos_f[1]))
-        if point != self.pos():
-            self.move(point)
+        if self.walk_anchor is not None:
+            self.walk_anchor = point_f
+            if not any(display.physical.contains(point_f.toPoint()) for display in self.desktop_layout.displays.values()):
+                # A disconnected display has no visible bridge. Keep the last visible frame until entry.
+                return
+            if not move_window_anchor(int(self.winId()), point_f.x(), point_f.y()):
+                self.walk_anchor = self.motion_screen = None
+                return
+            self.update_motion_screen(point_f)
+            point = self.pos()
+            self.pos_f = [float(point.x()), float(point.y())]
             self.update_panel_position()
+        else:
+            self.pos_f = [point_f.x(), point_f.y()]
+            point = point_f.toPoint()
+            if point != self.pos():
+                self.move(point)
+                self.update_panel_position()
 
     def start_playful_sleep(self):
         self.state = 'playful_sleep'
@@ -1661,10 +1732,8 @@ class DesktopPet(QWidget):
         self.update_image()
         self.show_speech('咚咚！回来继续专注吧～', 2500)
 
-    @staticmethod
-    def screen_for_window(handle):
-        device = window_monitor(handle)
-        return next((screen for screen in QApplication.screens() if screen.name() == device), None)
+    def screen_for_window(self, handle):
+        return self.screens_by_device.get(window_monitor(handle).casefold())
 
     def check_focus(self):
         now = time.monotonic()
@@ -1933,6 +2002,8 @@ class DesktopPet(QWidget):
         now = time.monotonic()
         dt = min(0.05, max(0, now - self.physics_last_tick))
         self.physics_last_tick = now
+        if self.topology_timer.isActive():
+            return
         if self.state in ('walk', 'chase'):
             self.update_walk(now, dt)
             return
@@ -1997,6 +2068,12 @@ class DesktopPet(QWidget):
             self.press_pos = event.globalPosition().toPoint()
             self.last_drag_pos = self.press_pos
             self.drag_offset = self.press_pos - self.pos()
+            self.drag_anchor = None
+            if self.desktop_layout and self.isVisible() and event.spontaneous():
+                cursor = physical_cursor()
+                rect = physical_window_rect(int(self.winId()))
+                if cursor and rect and rect[2] > 0 and rect[3] > 0:
+                    self.drag_anchor = ((cursor[0] - rect[0]) / rect[2], (cursor[1] - rect[1]) / rect[3])
             self._double_click = False
             event.accept()
         elif event.button() == Qt.MouseButton.RightButton:
@@ -2009,7 +2086,9 @@ class DesktopPet(QWidget):
             self.drag_offset = self.press_pos = self.last_drag_pos = None
             self.unsetCursor()
             if self.state == 'drag':
-                self.start_idle()
+                self.finish_drag()
+            else:
+                self.drag_anchor = None
             return
         if self.drag_offset is None or self.press_pos is None:
             return
@@ -2027,8 +2106,16 @@ class DesktopPet(QWidget):
         if abs(dx) > 1:
             self.facing_right = dx > 0
         self.last_drag_pos = current_pos
-        point = self.clamp_position(current_pos - self.drag_offset)
-        self.move(point)
+        cursor = physical_cursor() if self.drag_anchor is not None else None
+        if cursor and move_window_anchor(int(self.winId()), *cursor, *self.drag_anchor):
+            self.update_motion_screen(QPointF(*cursor))
+            point = self.pos()
+        else:
+            self.drag_anchor = self.motion_screen = None
+            target_screen = self.screen_for_point(current_pos)
+            point = self.clamp_to_bounds(current_pos - self.drag_offset, target_screen.availableGeometry(), self.pet_size)
+            if point != self.pos():
+                self.move(point)
         self.pos_f = [float(point.x()), float(point.y())]
         self.ground_y = point.y()
         self.update_image()
@@ -2043,12 +2130,28 @@ class DesktopPet(QWidget):
         self.drag_offset = self.press_pos = self.last_drag_pos = None
         self.unsetCursor()
         if was_dragging:
-            self.start_idle()
-            self.save_data()
+            self.finish_drag()
         elif had_press and not self._double_click:
+            self.drag_anchor = None
             self.click_timer.start(QApplication.doubleClickInterval())
         self._double_click = False
         event.accept()
+
+    def finish_drag(self):
+        if self.drag_anchor is not None:
+            cursor = physical_cursor()
+            if cursor:
+                self.update_motion_screen(QPointF(*cursor))
+        bounds = self.current_bounds()
+        point = self.clamp_to_bounds(self.pos(), bounds, self.pet_size)
+        if point != self.pos():
+            self.move(point)
+        self.pos_f = [float(point.x()), float(point.y())]
+        self.ground_y = point.y()
+        self.drag_anchor = None
+        self.start_idle()
+        self.update_panel_position()
+        self.save_data()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2058,6 +2161,7 @@ class DesktopPet(QWidget):
             self.click_timer.stop()
             self._double_click = True
             self.drag_offset = self.press_pos = self.last_drag_pos = None
+            self.drag_anchor = None
             self.pet_head()
             event.accept()
 

@@ -11,15 +11,41 @@ from unittest.mock import patch
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
-from PyQt6.QtCore import QDate, QDateTime, QEvent, QPoint, QPointF, Qt
+from PyQt6.QtCore import QDate, QDateTime, QEvent, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QCursor, QMouseEvent, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QComboBox, QTableView
 
 import pet
 import startup_windows
+from desktop_layout import DesktopLayout, Display, match_windows_display
 from pet_core import (AFFECTION_THRESHOLDS, DAILY_PET_AFFECTION_LIMIT, WORK_AFFECTION_INTERVAL,
                       affection_tier, behavior_weights, normalize_data, read_save, write_save)
+
+
+class DisplayTests(unittest.TestCase):
+    def test_mixed_dpi_mapping_uses_origins_and_accepts_pixel_rounding(self):
+        physical = {'display1': (0, 0, 2560, 1600), 'display2': (-1920, -200, 1920, 1080)}
+        self.assertEqual(match_windows_display(QRect(0, 0, 1707, 1067), 1.5, physical), 'display1')
+        self.assertEqual(match_windows_display(QRect(-1920, -200, 1920, 1080), 1, physical), 'display2')
+        self.assertIsNone(match_windows_display(QRect(0, 0, 1707, 1067), 1, physical))
+        display = Display('display1', QRect(0, 0, 1707, 1067), QRect(*physical['display1']))
+        point = QPointF(520, 700)
+        self.assertAlmostEqual(display.to_logical(display.to_physical(point)).x(), point.x())
+        self.assertAlmostEqual(display.to_logical(display.to_physical(point)).y(), point.y())
+
+    def test_staggered_route_uses_shared_edges_and_can_cross_via_third_display(self):
+        a = QRect(-1200, -400, 1200, 800)
+        b = QRect(0, 0, 1200, 800)
+        c = QRect(400, 800, 800, 900)
+        layout = DesktopLayout([Display(name, rect, rect) for name, rect in zip('abc', [a, b, c])])
+        target = QPointF(800, 1300)
+        entry = layout.next_waypoint(QPointF(-800, -200), target)
+        self.assertEqual(entry, QPointF(0, 399))
+        next_entry = layout.next_waypoint(entry, target)
+        self.assertEqual(next_entry, QPointF(800, 800))
+        self.assertEqual(layout.next_waypoint(next_entry, target), target)
+        self.assertEqual(layout.next_waypoint(QPointF(500, 700), QPointF(-700, -200)), QPointF(-1, 0))
 
 
 class StorageTests(unittest.TestCase):
@@ -537,6 +563,48 @@ class PetTests(unittest.TestCase):
         self.assertEqual(self.p.pos() + QPoint(self.p.width() // 2, self.p.height() // 2), pointer)
         self.assertEqual(self.p.state, 'idle')
         self.assertFalse(self.p.physics_timer.isActive())
+
+    def test_cross_screen_walk_keeps_native_anchor_on_displays_in_both_directions(self):
+        left = Display('left', QRect(0, 0, 800, 600), QRect(0, 0, 1200, 900))
+        right = Display('right', QRect(1200, 400, 800, 700), QRect(1200, 400, 800, 700))
+        self.p.desktop_layout = DesktopLayout([left, right])
+        self.p.show()
+        for source, target, frame, logical_target in (
+            (left, right, (100, 100, 300, 300), QPoint(1360, 850)),
+            (right, left, (1600, 850, 200, 200), QPoint(180, 100)),
+        ):
+            visited = []
+            with patch('pet.physical_window_rect', return_value=frame), \
+                 patch('pet.move_window_anchor', side_effect=lambda handle, x, y: visited.append(QPointF(x, y)) or True):
+                self.p.begin_walk(logical_target)
+                self.p.walk_speed = 155
+                for tick in range(1400):
+                    if self.p.state != 'walk':
+                        break
+                    self.p.update_walk(tick * 0.016, 0.016)
+            self.assertEqual(self.p.state, 'idle')
+            self.assertEqual(self.p.pos(), logical_target)
+            self.assertTrue(source.physical.contains(visited[0].toPoint()))
+            self.assertTrue(target.physical.contains(visited[-1].toPoint()))
+            self.assertTrue(all(left.physical.contains(p.toPoint()) or right.physical.contains(p.toPoint())
+                                for p in visited))
+            for before, after in zip(visited, visited[1:]):
+                self.assertLessEqual((after - before).manhattanLength(), 4)
+
+    def test_drag_keeps_fractional_grab_point_when_the_cursor_crosses_screens(self):
+        left = QRect(0, 0, 800, 600)
+        right = QRect(800, -100, 1024, 700)
+        self.p.desktop_layout = DesktopLayout([Display('left', left, left), Display('right', right, right)])
+        self.p.show()
+        with patch('pet.physical_cursor', side_effect=[(100, 150), (900, 150), (900, 150)]), \
+             patch('pet.physical_window_rect', return_value=(75, 75, 200, 200)), \
+             patch('pet.move_window_anchor', return_value=True) as move:
+            QTest.mousePress(self.p, Qt.MouseButton.LeftButton, pos=QPoint(90, 90))
+            QTest.mouseMove(self.p, QPoint(140, 90))
+            move.assert_called_once_with(int(self.p.winId()), 900, 150, 0.125, 0.375)
+            QTest.mouseRelease(self.p, Qt.MouseButton.LeftButton, pos=QPoint(140, 90))
+        self.assertEqual(self.p.state, 'idle')
+        self.assertIsNone(self.p.drag_anchor)
 
     def test_focus_short_switch_recovery_and_single_knock(self):
         clock = 100.0
